@@ -1,0 +1,11 @@
+{
+  "text": "Disengaging warp drive. Returning to normal space-time parameters. Crew recovery protocols initiated.",
+  "trigger_type": "warp",
+  "personality_state": {
+    "anxiety": 0.5,
+    "speech_rate": 1.0,
+    "volume": 0.8,
+    "enthusiasm": 0.5
+  },
+  "timestamp": "2025-03-09T23:57:04.791916300Z"
+}
