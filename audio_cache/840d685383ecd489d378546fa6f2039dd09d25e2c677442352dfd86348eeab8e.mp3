@@ -1,8 +1,0 @@
-{
-  "error": {
-    "message": "[{'type': 'enum', 'loc': ('body', 'voice'), 'msg': \"Input should be 'nova', 'shimmer', 'echo', 'onyx', 'fable', 'alloy', 'ash', 'sage' or 'coral'\", 'input': 'Scottish Teen', 'ctx': {'expected': \"'nova', 'shimmer', 'echo', 'onyx', 'fable', 'alloy', 'ash', 'sage' or 'coral'\"}}]",
-    "type": "invalid_request_error",
-    "param": null,
-    "code": null
-  }
-}

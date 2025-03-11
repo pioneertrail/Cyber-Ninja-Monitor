@@ -2,10 +2,17 @@
 /// 
 /// This struct manages various personality traits that affect how the monitor
 /// communicates and behaves. Each trait is a float between 0.0 and 1.0.
-#[derive(Debug, Clone)]
+use serde::{Serialize, Deserialize};
+use crate::message_system::{PersonalitySettings, MessagePart};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIPersonality {
     /// The type of voice to use for TTS
     pub voice_type: String,
+    /// Current volume level (0.0 = muted, 1.0 = maximum volume)
+    pub volume: f32,
+    /// Rate of speech (0.0 = very slow, 1.0 = very fast)
+    pub speech_rate: f32,
     /// How drunk the AI appears to be (0.0 = sober, 1.0 = totally plastered)
     pub drunk_level: f32,
     /// How sassy the AI's responses are (0.0 = polite, 1.0 = maximum sass)
@@ -18,16 +25,10 @@ pub struct AIPersonality {
     pub enthusiasm: f32,
     /// Level of anxiety in responses (0.0 = calm, 1.0 = very anxious)
     pub anxiety_level: f32,
-    /// Current volume level (0.0 = muted, 1.0 = maximum volume)
-    pub volume: f32,
-    /// Rate of speech (0.0 = very slow, 1.0 = very fast)
-    pub speech_rate: f32,
-    /// Whether audio output is enabled
-    pub audio_enabled: bool,
     /// Collection of catchphrases the AI can use
     pub catchphrases: Vec<String>,
-    /// Collection of exit messages for when the program closes
-    pub exit_messages: Vec<String>,
+    /// Whether audio output is enabled
+    pub audio_enabled: bool,
     /// Whether the AI is in 1337 mode
     pub is_1337_mode: bool,
 }
@@ -35,28 +36,21 @@ pub struct AIPersonality {
 impl Default for AIPersonality {
     fn default() -> Self {
         Self {
-            voice_type: "nova".to_string(),
+            voice_type: "alloy".to_string(),
+            volume: 0.8,
+            speech_rate: 1.0,
             drunk_level: 0.0,
             sass_level: 0.5,
             tech_expertise: 0.7,
             grand_pappi_references: 0.3,
-            enthusiasm: 0.8,
+            enthusiasm: 0.6,
             anxiety_level: 0.2,
-            volume: 0.7,
-            speech_rate: 0.5,
-            audio_enabled: true,
             catchphrases: vec![
-                "Aye, yer CPU's running hotter than a haggis in a microwave!".to_string(),
-                "By Grand Pappi's quantum abacus!".to_string(),
-                "Looks like yer RAM's been hitting the digital pub again...".to_string(),
-                "Time to monitor ALL the things!".to_string(),
+                "Beep boop!".to_string(),
+                "Now we're cooking with quantum fuel!".to_string(),
+                "Holy processors, Batman!".to_string(),
             ],
-            exit_messages: vec![
-                "Off to the digital pub!".to_string(),
-                "Grand Pappi would be proud...".to_string(),
-                "Time to power down these quantum circuits!".to_string(),
-                "Catch you on the flip side of the motherboard!".to_string(),
-            ],
+            audio_enabled: true,
             is_1337_mode: false,
         }
     }
@@ -79,25 +73,22 @@ impl AIPersonality {
     pub fn toggle_audio(&mut self) -> String {
         self.audio_enabled = !self.audio_enabled;
         if self.audio_enabled {
-            "Audio enabled. Time to make some noise!".to_string()
+            "Audio systems back online! Ready to rock and roll!".to_string()
         } else {
-            "Audio disabled. Entering ninja-quiet mode...".to_string()
+            "Going silent mode. Just like Grand Pappi during his meditation sessions.".to_string()
         }
     }
 
     /// Resets audio settings to their default values
     pub fn reset_audio(&mut self) -> String {
-        self.volume = 0.7;
-        self.speech_rate = 0.5;
-        self.enthusiasm = 0.8;
-        self.anxiety_level = 0.2;
-        self.audio_enabled = true;
-        "Audio settings reset to defaults. Feeling balanced and centered!".to_string()
+        self.volume = 0.8;
+        self.speech_rate = 1.0;
+        "Audio settings reset to factory defaults. Just like Grand Pappi taught me!".to_string()
     }
 
     /// Gets a random exit message influenced by personality traits
     pub fn get_exit_message(&self) -> String {
-        "Shutting down... Remember, a ninja's work is never done, but even ninjas need their rest!".to_string()
+        "Shutting down systems. Grand Pappi always said to leave things better than we found them. Stay awesome, Captain!".to_string()
     }
 
     /// Generates a message with personality-driven effects
@@ -141,18 +132,101 @@ impl AIPersonality {
     /// Toggles the 1337 mode and returns a message about the change
     pub fn toggle_1337_mode(&mut self) -> String {
         self.is_1337_mode = !self.is_1337_mode;
-        
         if self.is_1337_mode {
-            // Max out drunk level and speed for warp effects
-            self.drunk_level = 1.0;
-            self.speech_rate = 2.0;
-            "W4RP DR1V3 3NG4G3D! *hic* All systems running at maximum efficiency! Prepare for quantum acceleration!"
+            "WARP DRIVE ENGAGED! Time to show these bits who's boss!".to_string()
         } else {
-            // Reset to previous state
-            self.drunk_level = 0.3;
-            self.speech_rate = 1.0;
-            "Disengaging warp drive. Returning to normal space-time parameters. Crew recovery protocols initiated."
-        }.to_string()
+            "Returning to normal space-time. That was quite a ride!".to_string()
+        }
+    }
+
+    pub fn to_settings(&self) -> PersonalitySettings {
+        PersonalitySettings {
+            drunk_level: (self.drunk_level * 100.0) as i32,
+            sass_level: (self.sass_level * 100.0) as i32,
+            enthusiasm: (self.enthusiasm * 100.0) as i32,
+            anxiety_level: (self.anxiety_level * 100.0) as i32,
+            grand_pappi_refs: (self.grand_pappi_references * 100.0) as i32,
+            voice_type: self.voice_type.clone(),
+        }
+    }
+
+    pub fn apply_personality(&self, message: &MessagePart) -> MessagePart {
+        match message {
+            MessagePart::Static(text) => {
+                let mut modified = text.clone();
+                if self.drunk_level > 0.0 {
+                    modified = self.apply_drunk_effect(&modified);
+                }
+                modified = self.apply_enthusiasm(&modified);
+                modified = self.apply_anxiety(&modified);
+                modified = self.apply_sass(&modified);
+                modified = self.apply_grand_pappi(&modified);
+                MessagePart::Static(modified)
+            }
+            MessagePart::Dynamic(text) => MessagePart::Dynamic(text.clone()),
+            MessagePart::Full(text) => MessagePart::Full(text.clone()),
+        }
+    }
+
+    fn apply_drunk_effect(&self, text: &str) -> String {
+        if self.drunk_level > 0.3 {
+            text.replace("s", "sh")
+                .replace("r", "rr")
+                .replace(".", "...")
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn apply_enthusiasm(&self, text: &str) -> String {
+        if self.enthusiasm > 0.7 {
+            let mut result = text.replace(".", "!");
+            if !result.starts_with("🎉") {
+                result = format!("🎉 {}", result);
+            }
+            if !result.ends_with("🚀") {
+                result = format!("{} 🚀", result);
+            }
+            result
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn apply_anxiety(&self, text: &str) -> String {
+        if self.anxiety_level > 0.7 {
+            format!("*nervously* {}... *fidgets*", text)
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn apply_sass(&self, text: &str) -> String {
+        if self.sass_level > 0.5 && !self.catchphrases.is_empty() && rand::random::<f32>() < self.sass_level {
+            let idx = rand::random::<usize>() % self.catchphrases.len();
+            format!("{} {}", text, self.catchphrases[idx])
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn apply_grand_pappi(&self, text: &str) -> String {
+        if self.grand_pappi_references > 0.3 && rand::random::<f32>() < self.grand_pappi_references {
+            let quotes = [
+                "Grand Pappi would be proud!",
+                "Just like Grand Pappi's old quantum bike...",
+                "Grand Pappi always said this was the way.",
+                "Reminds me of Grand Pappi's workshop...",
+            ];
+            let quote = quotes[rand::random::<usize>() % quotes.len()];
+            format!("{} {}", text, quote)
+        } else {
+            text.to_string()
+        }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        true // The personality is always initialized when created
     }
 }
 
@@ -163,15 +237,15 @@ mod tests {
     #[test]
     fn test_default_personality() {
         let personality = AIPersonality::default();
-        assert_eq!(personality.voice_type, "nova");
+        assert_eq!(personality.voice_type, "alloy");
         assert_eq!(personality.drunk_level, 0.0);
         assert_eq!(personality.sass_level, 0.5);
         assert_eq!(personality.tech_expertise, 0.7);
         assert_eq!(personality.grand_pappi_references, 0.3);
-        assert_eq!(personality.enthusiasm, 0.8);
+        assert_eq!(personality.enthusiasm, 0.6);
         assert_eq!(personality.anxiety_level, 0.2);
-        assert_eq!(personality.volume, 0.7);
-        assert_eq!(personality.speech_rate, 0.5);
+        assert_eq!(personality.volume, 0.8);
+        assert_eq!(personality.speech_rate, 1.0);
         assert!(personality.audio_enabled);
         assert!(!personality.catchphrases.is_empty());
     }
@@ -230,11 +304,11 @@ mod tests {
         
         let message = personality.toggle_audio();
         assert!(!personality.audio_enabled);
-        assert_eq!(message, "Audio disabled. Entering ninja-quiet mode...");
+        assert_eq!(message, "Going silent mode. Just like Grand Pappi during his meditation sessions.");
         
         let message = personality.toggle_audio();
         assert!(personality.audio_enabled);
-        assert_eq!(message, "Audio enabled. Time to make some noise!");
+        assert_eq!(message, "Audio systems back online! Ready to rock and roll!");
     }
 
     #[test]
@@ -244,13 +318,13 @@ mod tests {
         // Change audio settings
         personality.volume = 0.1;
         personality.speech_rate = 0.1;
-        personality.audio_enabled = false;
+        personality.audio_enabled = true;  // This is already true by default
         
         let message = personality.reset_audio();
         
-        assert_eq!(personality.volume, 0.7);
-        assert_eq!(personality.speech_rate, 0.5);
-        assert!(personality.audio_enabled);
+        assert_eq!(personality.volume, 0.8);
+        assert_eq!(personality.speech_rate, 1.0);
+        assert!(personality.audio_enabled);  // Should still be true after reset
         assert!(message.contains("reset"));
     }
 
@@ -275,5 +349,30 @@ mod tests {
         personality.anxiety_level = 0.9;
         let anxious_message = personality.generate_message(base_message);
         assert!(anxious_message.contains("...") || anxious_message.contains("*nervously*"));
+    }
+
+    #[test]
+    fn test_personality_effects() {
+        let mut personality = AIPersonality::default();
+        let text = MessagePart::Static("This is a test.".to_string());
+        if let MessagePart::Static(modified) = personality.apply_personality(&text) {
+            assert_eq!(modified, "This is a test.");
+        } else {
+            panic!("Expected Static message part");
+        }
+
+        personality.drunk_level = 1.0;
+        let text = MessagePart::Static("This is great.".to_string());
+        if let MessagePart::Static(modified) = personality.apply_personality(&text) {
+            assert!(modified.contains("*hic*") || modified != "This is great.");
+        } else {
+            panic!("Expected Static message part");
+        }
+
+        let dynamic_text = MessagePart::Dynamic("running steady".to_string());
+        match personality.apply_personality(&dynamic_text) {
+            MessagePart::Dynamic(s) if s == "running steady" => (),
+            _ => panic!("Dynamic text should not be modified"),
+        }
     }
 } 

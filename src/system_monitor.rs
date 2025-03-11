@@ -155,6 +155,10 @@ impl SystemMonitor {
             print!("\x1B[2J\x1B[1;1H"); // Clear screen
         }
     }
+
+    pub fn is_initialized(&self) -> bool {
+        true // The monitor is always initialized when created
+    }
 }
 
 #[cfg(test)]

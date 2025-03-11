@@ -1,22 +1,24 @@
-use sysinfo::{System, SystemExt, CpuExt, DiskExt};
+use sysinfo::{System, SystemExt, DiskExt};
 
 // Module declarations
-pub mod system_monitor;
-pub mod network_stats;
-pub mod ai_personality;
 pub mod tts;
+pub mod system_monitor;
 pub mod theme;
-pub mod audio_manager;
+pub mod ai_personality;
+pub mod particles;
+pub mod message_system;
+pub mod network_stats;
 pub mod personality_modal;
 
 // Re-export public types
+pub use message_system::{MessagePart, SystemData, CacheKey, PersonalitySettings, generate_message};
 pub use system_monitor::SystemMonitor;
 pub use network_stats::NetworkStats;
 pub use ai_personality::AIPersonality;
 pub use tts::TTSManager;
 pub use theme::CyberTheme;
-pub use audio_manager::AudioManager;
 pub use personality_modal::PersonalityModal;
+pub use particles::{Particle, ParticleSystem};
 
 // Constants
 pub const MIN_MEMORY_GB: f64 = 4.0;

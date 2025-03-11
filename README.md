@@ -1,6 +1,57 @@
-# CyberNinja System Monitor
+# Cyber Ninja Monitor
 
-A cyberpunk-themed system monitoring application built with Rust, featuring real-time system stats, voice feedback, and Star Trek-inspired warp drive effects.
+A cyberpunk-themed system monitoring application with personality! Built with Rust and eframe.
+
+## Features
+
+- Real-time system monitoring (CPU, Memory, Disk, Network)
+- Text-to-speech notifications with customizable AI personality
+- Cyberpunk-inspired UI with dynamic effects
+- Customizable personality traits:
+  - Voice type selection
+  - Drunk level
+  - Sass level
+  - Tech expertise
+  - Grand Pappi references
+  - Enthusiasm
+  - Anxiety level
+- Custom catchphrases
+- Audio controls with volume and speech rate adjustment
+
+## Requirements
+
+- Rust 1.70 or higher
+- OpenAI API key (for TTS functionality)
+- Windows 10 or higher
+
+## Setup
+
+1. Clone the repository
+2. Create a `.env` file in the root directory with your OpenAI API key:
+   ```
+   OPENAI_API_KEY=your_api_key_here
+   ```
+3. Build and run:
+   ```bash
+   cargo build
+   cargo run
+   ```
+
+## Usage
+
+1. Launch the application
+2. Click the settings icon (⚙) to open the personality settings
+3. Adjust voice type, personality traits, and add catchphrases
+4. Use the test audio button to preview your settings
+5. Monitor your system with style!
+
+## License
+
+MIT License
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Official Documentation References
 
@@ -51,83 +102,6 @@ A cyberpunk-themed system monitoring application built with Rust, featuring real
 - [Rust Test Documentation](https://doc.rust-lang.org/book/ch11-00-testing.html) - Testing in Rust
 - [Rust Async Book](https://rust-lang.github.io/async-book/) - Asynchronous programming
 - [Rust Performance Book](https://nnethercote.github.io/perf-book/) - Performance optimization
-
-## Features
-
-- Real-time system monitoring
-  - CPU usage
-  - Memory usage
-  - Disk usage
-  - Network statistics
-  - Process monitoring
-
-- Interactive UI
-  - Cyberpunk-themed design
-  - Animated grid effects
-  - Neon color schemes
-  - Responsive layouts
-
-- Voice Feedback
-  - Text-to-speech notifications
-  - Personality-driven responses
-  - Configurable voice settings
-
-- Special Effects
-  - Star Trek-inspired warp drive visualization
-  - Dynamic lighting and animations
-  - Glitch effects for alerts
-  - Spinning shurikens
-
-## Configuration
-
-### Environment Variables
-```env
-OPENAI_API_KEY=your_api_key_here
-```
-
-### Audio Settings
-- Voice Type: "nova" (OpenAI TTS voice)
-- Volume Range: 0.0 - 1.0
-- Speech Rate: 0.5 - 2.0
-
-### Personality Traits
-- Drunk Level: 0.0 - 1.0
-- Sass Level: 0.0 - 1.0
-- Tech Expertise: 0.0 - 1.0
-- Enthusiasm: 0.0 - 1.0
-- Anxiety Level: 0.0 - 1.0
-
-## Building and Running
-
-1. Install Rust and Cargo
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-2. Clone the repository
-```bash
-git clone <repository_url>
-cd cyberninjaapp
-```
-
-3. Set up environment variables
-```bash
-cp .env.example .env
-# Edit .env with your OpenAI API key
-```
-
-4. Build and run
-```bash
-cargo run --release
-```
-
-## Contributing
-
-Please read our contributing guidelines and code of conduct before submitting pull requests.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 

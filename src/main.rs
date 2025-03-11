@@ -1,22 +1,28 @@
+use eframe::NativeOptions;
 use eframe::egui::{
     self, Color32, Pos2, RichText, Rect, vec2, TextureHandle, Vec2, Align2, FontId, Stroke, pos2,
-    ViewportBuilder,
+    Rounding, ViewportBuilder,
 };
-use sysinfo::{System, SystemExt, CpuExt};
-use std::time::{Duration, Instant};
-use dotenv::dotenv;
-use crate::tts::TTSManager;
+use crate::message_system::{SystemData, generate_message, MessagePart, PersonalitySettings};
+use crate::theme::{SCAN_LINE_SPEED, HOLOGRAM_FLICKER_SPEED, BLOOM_INTENSITY, FOG_DENSITY, HOLOGRAM_OPACITY, CyberTheme};
 use crate::system_monitor::SystemMonitor;
-use usvg::TreeParsing;
-use crate::theme::{CyberTheme, GRID_SIZE, HEADER_HEIGHT, PULSE_SPEED, SCAN_LINE_SPEED, GLITCH_INTERVAL};
 use crate::ai_personality::AIPersonality;
-use crate::audio_manager::AudioManager;
+use crate::tts::TTSManager;
+use tokio::runtime::Runtime;
+use egui::Context;
+use std::time::{Instant, Duration};
+use sysinfo::{System, SystemExt, CpuExt};
+use dotenv::dotenv;
+use rand::Rng;
+use crate::particles::ParticleSystem;
+use usvg::TreeParsing;
 
 mod tts;
 mod system_monitor;
 mod theme;
-mod audio_manager;
 mod ai_personality;
+mod particles;
+mod message_system;
 
 const CPU_ICON: &[u8] = include_bytes!("../assets/cpu_icon.svg");
 const MEMORY_ICON: &[u8] = include_bytes!("../assets/memory_icon.svg");
@@ -59,10 +65,10 @@ pub struct CyberNinjaApp {
     system: System,
     start_time: Instant,
     neon_pulse: f32,
-    tts_manager: Option<TTSManager>,
+    tts: Option<TTSManager>,
     last_cpu_warning: Option<Instant>,
     last_memory_warning: Option<Instant>,
-    last_status_update: Option<Instant>,
+    last_status_update: Instant,
     show_settings: bool,
     settings_volume: f32,
     settings_cpu_threshold: f32,
@@ -77,79 +83,115 @@ pub struct CyberNinjaApp {
     editing_catchphrase: String,
     theme: theme::CyberTheme,
     shurikens: Vec<theme::Shuriken>,
-    last_frame_time: std::time::Instant,
+    last_frame_time: Instant,
     warp_effect_intensity: f32,
+    particle_system: ParticleSystem,
+    hologram_phase: f32,
+    runtime: Runtime,
 }
 
 impl CyberNinjaApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        println!("Initializing CyberNinjaApp...");
-        dotenv().ok();
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        println!("Initializing CyberNinjaApp");
         
-        let mut sys = System::new();
-        sys.refresh_cpu();
+        // Set up custom fonts if needed
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         
-        let mut tts_manager = TTSManager::new();
-        if let Some(ref mut tts) = tts_manager {
-            if let Err(e) = tts.speak(
-                "Yo! Systems are lit and running sweet as candy! Grand Pappi Scotty would be proud - he always said a well-tuned system purrs like his old quantum bike. Let's get this party started, Captain!",
-                "startup"
-            ) {
-                eprintln!("TTS Error: {}", e);
-            }
-        }
-
-        // Load icons
-        let ctx = &cc.egui_ctx;
-        let cpu_icon = load_svg_icon(ctx, CPU_ICON);
-        let memory_icon = load_svg_icon(ctx, MEMORY_ICON);
-        let disk_icon = load_svg_icon(ctx, DISK_ICON);
-
-        // Initialize shurikens
-        let mut shurikens = Vec::new();
+        // Set up dark visuals by default
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        
+        let runtime = Runtime::new().expect("Failed to create Tokio runtime");
         let theme = theme::CyberTheme::default();
         
-        // Add decorative shurikens
-        shurikens.push(theme::Shuriken::new(
-            Pos2::new(50.0, 50.0),
-            theme.neon_primary
-        ));
-        shurikens.push(theme::Shuriken::new(
-            Pos2::new(974.0, 50.0),
-            theme.neon_secondary
-        ));
-        
-        Self {
-            system: sys,
+        let mut app = Self {
+            system: System::new_all(),
             start_time: Instant::now(),
             neon_pulse: 0.0,
-            tts_manager,
+            tts: None,
             last_cpu_warning: None,
             last_memory_warning: None,
-            last_status_update: None,
+            last_status_update: Instant::now(),
             show_settings: false,
             settings_volume: 0.8,
             settings_cpu_threshold: 80.0,
             settings_update_interval: 300.0,
             network_stats: NetworkStats::new(),
-            cpu_icon: Some(cpu_icon),
-            memory_icon: Some(memory_icon),
-            disk_icon: Some(disk_icon),
+            cpu_icon: None,
+            memory_icon: None,
+            disk_icon: None,
             alert_glitch: None,
             monitor: SystemMonitor::new(),
             personality: AIPersonality::default(),
             editing_catchphrase: String::new(),
-            shurikens,
-            last_frame_time: std::time::Instant::now(),
+            theme: theme.clone(),
+            shurikens: Vec::new(),
+            last_frame_time: Instant::now(),
             warp_effect_intensity: 0.0,
-            theme,
+            particle_system: ParticleSystem::new(theme),
+            hologram_phase: 0.0,
+            runtime,
+        };
+        
+        // Print current working directory and environment variables for debugging
+        println!("Current working directory: {:?}", std::env::current_dir().unwrap_or_default());
+        println!("OPENAI_API_KEY exists: {:?}", std::env::var("OPENAI_API_KEY").is_ok());
+        
+        println!("Initializing TTS system...");
+        if let Some(mut tts) = TTSManager::new() {
+            println!("TTS system initialized successfully");
+            let startup_message = vec![
+                MessagePart::Static("CyberNinja Monitor initialized.".to_string())
+            ];
+            let settings = app.personality.to_settings();
+            println!("Attempting to speak startup message...");
+            app.runtime.block_on(async {
+                if let Err(e) = tts.speak(startup_message, &settings).await {
+                    eprintln!("Failed to speak startup message: {}", e);
+                }
+            });
+            app.tts = Some(tts);
+        } else {
+            eprintln!("Failed to initialize TTS system");
         }
+        
+        // Load icons
+        let ctx = &cc.egui_ctx;
+        app.cpu_icon = Some(load_svg_icon(ctx, CPU_ICON));
+        app.memory_icon = Some(load_svg_icon(ctx, MEMORY_ICON));
+        app.disk_icon = Some(load_svg_icon(ctx, DISK_ICON));
+
+        // Initialize shurikens
+        app.shurikens.push(theme::Shuriken::new(
+            Pos2::new(50.0, 50.0),
+            app.theme.neon_primary
+        ));
+        app.shurikens.push(theme::Shuriken::new(
+            Pos2::new(974.0, 50.0),
+            app.theme.neon_secondary
+        ));
+        
+        println!("CyberNinjaApp initialization complete");
+        app
     }
 
     fn generate_message(&self, base_message: &str) -> String {
         let mut message = base_message.to_string();
         let mut prefix = String::new();
         let mut suffix = String::new();
+
+        // Convert numerical values to qualitative descriptions
+        message = message
+            .replace(|c: char| c.is_numeric(), "")
+            .replace("%", "")
+            .replace("MB/s", "")
+            .replace("GB", "")
+            .replace("  ", " ");
+
+        // Replace numerical descriptions with qualitative ones
+        message = message
+            .replace("at ", "is ")
+            .replace("using about", "at")
+            .replace("running at", "running");
         
         // Add drunk effects
         if self.personality.drunk_level > 0.3 {
@@ -197,94 +239,64 @@ impl CyberNinjaApp {
     }
 
     fn check_system_warnings(&mut self) {
-        let cpu_usage = self.system.global_cpu_info().cpu_usage();
-        let memory_used = self.system.used_memory() as f32 / self.system.total_memory() as f32;
-        
-        // CPU warning (every 30 seconds)
-        if cpu_usage > self.settings_cpu_threshold {
-            if self.last_cpu_warning
-                .map_or(true, |last| last.elapsed().as_secs() > 30)
-            {
-                self.last_cpu_warning = Some(Instant::now());
-                self.alert_glitch = Some(Instant::now());
-                
-                let base_message = format!(
-                    "The processors are running super hot! They're at {}%! Need to cool them down!",
-                    cpu_usage
-                );
-                let message = self.generate_message(&base_message);
-                
-                if let Some(tts) = &mut self.tts_manager {
-                    println!("Attempting to announce CPU warning...");
-                    tts.set_volume(self.settings_volume);
-                    if let Err(e) = tts.speak(&message, "cpu_warning") {
-                        println!("Error announcing CPU warning: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Memory warning (every 30 seconds)
-        if memory_used > 0.9 {
-            if self.last_memory_warning
-                .map_or(true, |last| last.elapsed().as_secs() > 30)
-            {
-                self.last_memory_warning = Some(Instant::now());
-                self.alert_glitch = Some(Instant::now());
-                
-                let base_message = format!(
-                    "Memory banks are stuffed fuller than Grand Pappi's tool shed! We're using about {}% - time to dump some data before this whole rig goes sideways!",
-                    memory_used * 100.0
-                );
-                let message = self.generate_message(&base_message);
-                
-                if let Some(tts) = &mut self.tts_manager {
-                    println!("Attempting to announce memory warning...");
-                    tts.set_volume(self.settings_volume);
-                    if let Err(e) = tts.speak(&message, "memory_warning") {
-                        println!("Error announcing memory warning: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Regular status updates
-        if self.last_status_update
-            .map_or(true, |last| last.elapsed().as_secs() > self.settings_update_interval as u64)
-        {
-            self.last_status_update = Some(Instant::now());
-            
-            let cpu_status = if cpu_usage < 30.0 {
-                "super chill"
-            } else if cpu_usage < 60.0 {
-                "cruising along"
-            } else {
-                "working overtime"
+        if let Some(tts) = &mut self.tts {
+            let data = SystemData {
+                cpu_usage: self.system.global_cpu_info().cpu_usage(),
+                memory_used: self.system.used_memory(),
+                memory_total: self.system.total_memory(),
+                disk_usage: 0.0, // We'll update this when needed
+                network_rx: 0,
+                network_tx: 0,
             };
 
-            let mem_status = if memory_used < 0.5 {
-                "barely breaking a sweat"
-            } else if memory_used < 0.8 {
-                "getting cozy"
-            } else {
-                "packed like a cyber-rave"
-            };
-
-            let base_status = format!(
-                "System check! Processors are {} at {}%, and memory is {} at {}%",
-                cpu_status,
-                cpu_usage,
-                mem_status,
-                memory_used * 100.0
-            );
-            
-            let message = self.generate_message(&base_status);
-            
-            if let Some(tts) = &mut self.tts_manager {
-                tts.set_volume(self.settings_volume);
-                if let Err(e) = tts.speak(&message, "status_update") {
-                    println!("Error announcing status update: {}", e);
+            // CPU warning (every 30 seconds)
+            if data.cpu_usage > self.settings_cpu_threshold {
+                if self.last_cpu_warning
+                    .map_or(true, |last| last.elapsed().as_secs() > 30)
+                {
+                    self.last_cpu_warning = Some(Instant::now());
+                    self.alert_glitch = Some(Instant::now());
+                    
+                    let parts = generate_message(&data);
+                    
+                    self.runtime.block_on(async {
+                        if let Err(e) = tts.speak(parts, &self.personality.to_settings()).await {
+                            eprintln!("Failed to speak CPU warning: {}", e);
+                        }
+                    });
                 }
+            }
+
+            // Memory warning (every 30 seconds)
+            let memory_used_pct = data.memory_used as f32 / data.memory_total as f32;
+            if memory_used_pct > 0.9 {
+                if self.last_memory_warning
+                    .map_or(true, |last| last.elapsed().as_secs() > 30)
+                {
+                    self.last_memory_warning = Some(Instant::now());
+                    self.alert_glitch = Some(Instant::now());
+                    
+                    let parts = generate_message(&data);
+                    
+                    self.runtime.block_on(async {
+                        if let Err(e) = tts.speak(parts, &self.personality.to_settings()).await {
+                            eprintln!("Failed to speak memory warning: {}", e);
+                        }
+                    });
+                }
+            }
+
+            // Regular status updates
+            if self.last_status_update.elapsed() >= Duration::from_secs(self.settings_update_interval as u64) {
+                self.last_status_update = Instant::now();
+                
+                let parts = generate_message(&data);
+                
+                self.runtime.block_on(async {
+                    if let Err(e) = tts.speak(parts, &self.personality.to_settings()).await {
+                        eprintln!("Failed to speak status update: {}", e);
+                    }
+                });
             }
         }
     }
@@ -293,78 +305,188 @@ impl CyberNinjaApp {
         egui::Window::new("AI Personality Settings")
             .open(&mut self.show_settings)
             .show(ctx, |ui| {
+                // Voice Settings Section
                 ui.heading("Voice Settings");
-                ui.horizontal(|ui| {
-                    ui.label("Voice Type:");
-                    ui.text_edit_singleline(&mut self.personality.voice_type);
-                });
+                egui::Frame::none()
+                    .fill(self.theme.background_light)
+                    .rounding(Rounding::same(4.0))
+                    .show(ui, |ui| {
+                        // Voice type dropdown
+                        ui.horizontal(|ui| {
+                            ui.label("Voice Type:");
+                            egui::ComboBox::from_id_source("voice_type")
+                                .selected_text(&self.personality.voice_type)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.personality.voice_type, "alloy".to_string(), "Alloy");
+                                    ui.selectable_value(&mut self.personality.voice_type, "echo".to_string(), "Echo");
+                                    ui.selectable_value(&mut self.personality.voice_type, "fable".to_string(), "Fable");
+                                    ui.selectable_value(&mut self.personality.voice_type, "nova".to_string(), "Nova");
+                                    ui.selectable_value(&mut self.personality.voice_type, "onyx".to_string(), "Onyx");
+                                    ui.selectable_value(&mut self.personality.voice_type, "shimmer".to_string(), "Shimmer");
+                                });
+                            
+                            if ui.button("Apply Voice").clicked() && self.tts.is_some() {
+                                if let Some(tts) = &mut self.tts {
+                                    tts.set_voice_type(self.personality.voice_type.clone());
+                                }
+                            }
+                        });
 
-                // Audio Controls
-                ui.heading("Audio Controls");
-                ui.horizontal(|ui| {
-                    if ui.button(if self.personality.audio_enabled { "🔊 Mute" } else { "🔈 Unmute" }).clicked() {
-                        let message = self.personality.toggle_audio();
-                        if let Some(tts) = &mut self.tts_manager {
-                            let _ = tts.speak(&message, "audio_toggle");
+                        // Audio Controls
+                        ui.add_space(8.0);
+                        ui.heading("Audio Controls");
+                        
+                        // Audio test and mute buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("🔊 Test Audio").clicked() {
+                                if let Some(tts) = &mut self.tts {
+                                    // Create a test message that will demonstrate personality traits
+                                    let test_message = if self.personality.drunk_level > 0.5 {
+                                        "Hey there, let's test these awesome settings!"
+                                    } else if self.personality.sass_level > 0.5 {
+                                        "Oh great, another test? Fine, let's do this."
+                                    } else if self.personality.anxiety_level > 0.5 {
+                                        "Um... testing the voice settings... if that's okay?"
+                                    } else if self.personality.enthusiasm > 0.5 {
+                                        "WOW! Time to test these AMAZING voice settings!"
+                                    } else {
+                                        "Testing personality and voice settings."
+                                    };
+
+                                    let message = vec![MessagePart::Static(test_message.to_string())];
+                                    let settings = self.personality.to_settings();
+                                    
+                                    // Update TTS settings before speaking
+                                    tts.set_voice_type(self.personality.voice_type.clone());
+                                    tts.set_volume(self.personality.volume);
+                                    tts.set_speech_rate(self.personality.speech_rate);
+                                    
+                                    self.runtime.block_on(async {
+                                        if let Err(e) = tts.speak(message, &settings).await {
+                                            eprintln!("Audio test error: {}", e);
+                                        }
+                                    });
+                                }
+                            }
+                            
+                            if ui.button(if self.personality.audio_enabled { "🔊 Mute" } else { "🔈 Unmute" }).clicked() {
+                                self.personality.audio_enabled = !self.personality.audio_enabled;
+                                if let Some(tts) = &mut self.tts {
+                                    tts.set_audio_enabled(self.personality.audio_enabled);
+                                    let message = vec![MessagePart::Static("Audio toggled".to_string())];
+                                    let settings = self.personality.to_settings();
+                                    self.runtime.block_on(async {
+                                        if let Err(e) = tts.speak(message, &settings).await {
+                                            eprintln!("Failed to speak: {}", e);
+                                        }
+                                    });
+                                }
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                        if ui.add(egui::Slider::new(&mut self.personality.volume, 0.0..=1.0)
+                            .text("Volume")
+                            .clamp_to_range(true)).changed() && self.tts.is_some() {
+                            if let Some(tts) = &mut self.tts {
+                                tts.set_volume(self.personality.volume);
+                            }
                         }
-                    }
-                    if ui.button("🔄 Reset Audio").clicked() {
-                        let message = self.personality.reset_audio();
-                        if let Some(tts) = &mut self.tts_manager {
-                            tts.set_volume(self.personality.volume);
-                            let _ = tts.speak(&message, "audio_reset");
+                        
+                        if ui.add(egui::Slider::new(&mut self.personality.speech_rate, 0.5..=2.0)
+                            .text("Speech Rate")
+                            .clamp_to_range(true)).changed() && self.tts.is_some() {
+                            if let Some(tts) = &mut self.tts {
+                                tts.set_speech_rate(self.personality.speech_rate);
+                            }
                         }
-                    }
-                });
+                    });
 
-                ui.add(egui::Slider::new(&mut self.personality.volume, 0.0..=1.0)
-                    .text("Volume")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.speech_rate, 0.5..=2.0)
-                    .text("Speech Rate")
-                    .clamp_to_range(true));
+                ui.add_space(8.0);
 
+                // Personality Traits Section
                 ui.heading("Personality Traits");
-                ui.add(egui::Slider::new(&mut self.personality.drunk_level, 0.0..=1.0)
-                    .text("Drunk Level")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.sass_level, 0.0..=1.0)
-                    .text("Sass Level")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.tech_expertise, 0.0..=1.0)
-                    .text("Tech Expertise")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.grand_pappi_references, 0.0..=1.0)
-                    .text("Grand Pappi References")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.enthusiasm, 0.0..=1.0)
-                    .text("Enthusiasm")
-                    .clamp_to_range(true));
-                ui.add(egui::Slider::new(&mut self.personality.anxiety_level, 0.0..=1.0)
-                    .text("Anxiety Level")
-                    .clamp_to_range(true));
+                egui::Frame::none()
+                    .fill(self.theme.background_light)
+                    .rounding(Rounding::same(4.0))
+                    .show(ui, |ui| {
+                        ui.add(egui::Slider::new(&mut self.personality.drunk_level, 0.0..=1.0)
+                            .text("Drunk Level")
+                            .clamp_to_range(true));
+                        ui.add(egui::Slider::new(&mut self.personality.sass_level, 0.0..=1.0)
+                            .text("Sass Level")
+                            .clamp_to_range(true));
+                        ui.add(egui::Slider::new(&mut self.personality.tech_expertise, 0.0..=1.0)
+                            .text("Tech Expertise")
+                            .clamp_to_range(true));
+                        ui.add(egui::Slider::new(&mut self.personality.grand_pappi_references, 0.0..=1.0)
+                            .text("Grand Pappi References")
+                            .clamp_to_range(true));
+                        ui.add(egui::Slider::new(&mut self.personality.enthusiasm, 0.0..=1.0)
+                            .text("Enthusiasm")
+                            .clamp_to_range(true));
+                        ui.add(egui::Slider::new(&mut self.personality.anxiety_level, 0.0..=1.0)
+                            .text("Anxiety Level")
+                            .clamp_to_range(true));
+                        
+                        // Test personality button
+                        if ui.button("Test Personality").clicked() {
+                            if let Some(tts) = &mut self.tts {
+                                let message = vec![MessagePart::Static("Testing personality settings".to_string())];
+                                let settings = self.personality.to_settings();
+                                self.runtime.block_on(async {
+                                    if let Err(e) = tts.speak(message, &settings).await {
+                                        eprintln!("Failed to test personality: {}", e);
+                                    }
+                                });
+                            }
+                        }
+                    });
 
+                ui.add_space(8.0);
+
+                // Catchphrases Section
                 ui.heading("Catchphrases");
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.editing_catchphrase);
-                    if ui.button("Add").clicked() && !self.editing_catchphrase.is_empty() {
-                        self.personality.catchphrases.push(self.editing_catchphrase.clone());
-                        self.editing_catchphrase.clear();
-                    }
-                });
+                egui::Frame::none()
+                    .fill(self.theme.background_light)
+                    .rounding(Rounding::same(4.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.editing_catchphrase);
+                            if ui.button("Add").clicked() && !self.editing_catchphrase.is_empty() {
+                                self.personality.catchphrases.push(self.editing_catchphrase.clone());
+                                self.editing_catchphrase.clear();
+                            }
+                        });
 
-                for catchphrase in &self.personality.catchphrases {
-                    ui.label(catchphrase);
-                }
+                        // Show catchphrases with delete buttons
+                        let mut to_remove = None;
+                        for (idx, catchphrase) in self.personality.catchphrases.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(catchphrase).color(self.theme.text_dim));
+                                if ui.button("🗑").clicked() {
+                                    to_remove = Some(idx);
+                                }
+                            });
+                        }
+
+                        // Remove selected catchphrase
+                        if let Some(idx) = to_remove {
+                            self.personality.catchphrases.remove(idx);
+                        }
+                    });
 
                 // Exit button at the bottom
+                ui.add_space(16.0);
                 ui.separator();
                 if ui.button("🚪 Exit Application").clicked() {
                     let exit_message = self.personality.get_exit_message();
-                    if let Some(tts) = &mut self.tts_manager {
-                        let _ = tts.speak(&exit_message, "exit");
-                        // Give it a moment to speak before exiting
-                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    if let Some(tts) = &mut self.tts {
+                        let message = vec![MessagePart::Static(exit_message)];
+                        let settings = self.personality.to_settings();
+                        self.runtime.block_on(async {
+                            let _ = tts.speak(message, &settings).await;
+                        });
                     }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -538,15 +660,6 @@ impl CyberNinjaApp {
 
     fn show_audio_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("🔊 Test Audio").clicked() && self.personality.audio_enabled {
-                if let Some(tts) = &mut self.tts_manager {
-                    let message = "Systems operational! Testing audio subsystems.";
-                    if let Err(e) = tts.speak(message, "test") {
-                        println!("Audio test error: {}", e);
-                    }
-                }
-            }
-
             // Updated 1337 mode button with warp drive styling
             let warp_btn = egui::Button::new(
                 RichText::new(if self.personality.is_1337_mode {
@@ -562,24 +675,410 @@ impl CyberNinjaApp {
             );
 
             if ui.add(warp_btn).clicked() {
-                if let Some(tts) = &mut self.tts_manager {
-                    let message = self.personality.toggle_1337_mode();
-                    tts.set_speech_rate(if self.personality.is_1337_mode { 2.0 } else { 1.0 });
-                    if let Err(e) = tts.speak(&message, "warp") {
-                        println!("Warp drive error: {}", e);
-                    }
+                if let Some(tts) = &mut self.tts {
+                    let message = vec![MessagePart::Static("Warp mode activated".to_string())];
+                    let personality = PersonalitySettings {
+                        drunk_level: 0,
+                        sass_level: 0,
+                        enthusiasm: 0,
+                        anxiety_level: 0,
+                        grand_pappi_refs: 0,
+                        voice_type: "alloy".to_string(),
+                    };
+                    self.runtime.block_on(async {
+                        let _ = tts.speak(message, &personality).await;
+                    });
                 }
             }
 
             if ui.button(if self.personality.audio_enabled { "🔊 Mute" } else { "🔈 Unmute" }).clicked() {
-                let message = self.personality.toggle_audio();
-                if let Some(tts) = &mut self.tts_manager {
-                    tts.set_audio_enabled(self.personality.audio_enabled);
-                    if self.personality.audio_enabled {
-                        let _ = tts.speak(&message, "audio_toggle");
-                    }
+                if let Some(tts) = &mut self.tts {
+                    let message = vec![MessagePart::Static("Audio toggled".to_string())];
+                    let personality = PersonalitySettings {
+                        drunk_level: 0,
+                        sass_level: 0,
+                        enthusiasm: 0,
+                        anxiety_level: 0,
+                        grand_pappi_refs: 0,
+                        voice_type: "alloy".to_string(),
+                    };
+                    self.runtime.block_on(async {
+                        let _ = tts.speak(message, &personality).await;
+                    });
                 }
             }
+        });
+    }
+
+    fn draw_holographic_overlay(&self, ui: &mut egui::Ui, rect: Rect) {
+        let painter = ui.painter();
+        
+        // Calculate hologram flicker
+        let flicker = (self.hologram_phase * HOLOGRAM_FLICKER_SPEED).sin() * 0.5 + 0.5;
+        let hologram_color = Color32::from_rgba_premultiplied(
+            self.theme.hologram.r(),
+            self.theme.hologram.g(),
+            self.theme.hologram.b(),
+            (self.theme.hologram.a() as f32 * flicker * HOLOGRAM_OPACITY) as u8,
+        );
+
+        // Draw scanlines
+        for y in (rect.min.y as i32..rect.max.y as i32).step_by(4) {
+            let y = y as f32;
+            let alpha = ((y + self.start_time.elapsed().as_secs_f32() * SCAN_LINE_SPEED).sin() * 0.5 + 0.5) * 0.2;
+            
+            painter.line_segment(
+                [pos2(rect.min.x, y), pos2(rect.max.x, y)],
+                Stroke::new(1.0, Color32::from_rgba_premultiplied(
+                    hologram_color.r(),
+                    hologram_color.g(),
+                    hologram_color.b(),
+                    (hologram_color.a() as f32 * alpha) as u8,
+                )),
+            );
+        }
+
+        // Draw holographic interface elements
+        let interface_rect = rect.shrink(20.0);
+        painter.rect_stroke(
+            interface_rect,
+            4.0,
+            Stroke::new(2.0, hologram_color),
+        );
+
+        // Add corner decorations
+        let corner_size = 10.0;
+        for corner in &[
+            (interface_rect.min, (1.0, 1.0)),
+            (pos2(interface_rect.max.x, interface_rect.min.y), (-1.0, 1.0)),
+            (interface_rect.max, (-1.0, -1.0)),
+            (pos2(interface_rect.min.x, interface_rect.max.y), (1.0, -1.0)),
+        ] {
+            painter.line_segment(
+                [
+                    corner.0,
+                    pos2(corner.0.x + corner_size * corner.1.0, corner.0.y),
+                ],
+                Stroke::new(2.0, hologram_color),
+            );
+            painter.line_segment(
+                [
+                    corner.0,
+                    pos2(corner.0.x, corner.0.y + corner_size * corner.1.1),
+                ],
+                Stroke::new(2.0, hologram_color),
+            );
+        }
+    }
+
+    fn draw_bloom_effect(&self, ui: &mut egui::Ui, rect: Rect) {
+        let painter = ui.painter();
+        let center = rect.center();
+        
+        // Create a radial bloom effect
+        for i in 0..5 {
+            let radius = 100.0 + i as f32 * 50.0;
+            let alpha = (1.0 - i as f32 * 0.2) * BLOOM_INTENSITY;
+            
+            painter.circle_stroke(
+                center,
+                radius,
+                Stroke::new(
+                    2.0,
+                    Color32::from_rgba_premultiplied(
+                        self.theme.neon_primary.r(),
+                        self.theme.neon_primary.g(),
+                        self.theme.neon_primary.b(),
+                        (self.theme.neon_primary.a() as f32 * alpha) as u8,
+                    ),
+                ),
+            );
+        }
+    }
+
+    fn draw_volumetric_fog(&self, ui: &mut egui::Ui, rect: Rect) {
+        let painter = ui.painter();
+        let mut rng = rand::thread_rng();
+        
+        // Create volumetric fog effect
+        for _ in 0..50 {
+            let x = rng.gen_range(rect.min.x..rect.max.x);
+            let y = rng.gen_range(rect.min.y..rect.max.y);
+            let size = rng.gen_range(20.0..100.0);
+            let alpha = rng.gen_range(0.0..FOG_DENSITY);
+            
+            painter.circle_filled(
+                pos2(x, y),
+                size,
+                Color32::from_rgba_premultiplied(
+                    self.theme.volumetric_fog.r(),
+                    self.theme.volumetric_fog.g(),
+                    self.theme.volumetric_fog.b(),
+                    (self.theme.volumetric_fog.a() as f32 * alpha) as u8,
+                ),
+            );
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Calculate delta time
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+        
+        // Update hologram phase
+        self.hologram_phase += dt;
+        
+        // Update particle system
+        let rect = ctx.available_rect();
+        self.particle_system.update(dt, rect);
+        
+        // Refresh all monitoring systems
+        self.monitor.refresh();
+        self.system.refresh_cpu();
+        self.system.refresh_memory();
+        
+        // Update network stats
+        let network_info = self.monitor.get_network_info();
+        if let Some((_, rx, tx)) = network_info.first() {
+            self.network_stats.update(*rx, *tx);
+        }
+
+        self.check_system_warnings();
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        self.neon_pulse = (elapsed * 2.0).sin() * 0.5 + 0.5;
+        
+        // Set dark theme
+        let mut visuals = egui::Visuals::dark();
+        visuals.window_fill = Color32::from_rgb(13, 17, 23);
+        ctx.set_visuals(visuals);
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let rect = ui.max_rect();
+            
+            // Apply a subtle background
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                self.theme.background
+            );
+            
+            // Top bar with minimalist design
+            let top_bar_height = 48.0;
+            let top_bar_rect = Rect::from_min_size(
+                rect.min,
+                Vec2::new(rect.width(), top_bar_height),
+            );
+            
+            // Draw elegant frame for top bar
+            egui::Frame::none()
+                .fill(self.theme.background_light)
+                .rounding(Rounding::same(4.0))
+                .stroke(Stroke::new(1.0, self.theme.neon_primary))
+                .show(ui, |ui| {
+                    ui.allocate_rect(top_bar_rect, egui::Sense::hover());
+                });
+            
+            // Title with balanced typography
+            ui.painter().text(
+                top_bar_rect.center(),
+                Align2::CENTER_CENTER,
+                "System Monitor",
+                FontId::proportional(24.0),
+                self.theme.text_bright,
+            );
+
+            // Audio and settings controls in top bar with golden ratio spacing
+            let controls_width = rect.width() * 0.382; // Golden ratio
+            let audio_controls_rect = Rect::from_min_size(
+                Pos2::new(10.0, top_bar_rect.min.y + 8.0),
+                Vec2::new(controls_width * 0.618, 32.0), // Nested golden ratio
+            );
+            
+            let settings_btn_rect = Rect::from_min_size(
+                Pos2::new(rect.max.x - 90.0, top_bar_rect.min.y + 8.0),
+                Vec2::new(80.0, 32.0),
+            );
+
+            // Audio controls with clean layout
+            let mut audio_ui = ui.child_ui(audio_controls_rect, egui::Layout::left_to_right(egui::Align::Center));
+            self.show_audio_controls(&mut audio_ui);
+
+            // Settings button with consistent styling
+            if ui.put(
+                settings_btn_rect,
+                egui::Button::new(RichText::new("⚙ Settings").color(self.theme.text_bright))
+            ).clicked() {
+                self.show_settings = !self.show_settings;
+            }
+
+            // Main content area with balanced proportions
+            let content_rect = rect.shrink2(Vec2::new(20.0, top_bar_height + 20.0));
+            let mut content_ui = ui.child_ui(content_rect, egui::Layout::top_down(egui::Align::LEFT));
+
+            // Left column for system info and CPU
+            content_ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(content_rect.width() * 0.382); // Golden ratio
+                    
+                    // System Info Card
+                    egui::Frame::none()
+                        .fill(self.theme.background_light)
+                        .rounding(Rounding::same(8.0))
+                        .stroke(Stroke::new(1.0, self.theme.neon_primary))
+                        .show(ui, |ui| {
+                            self.draw_system_info_section(ui);
+                        });
+                    
+                    ui.add_space(10.0);
+                    
+                    // CPU Usage Card
+                    egui::Frame::none()
+                        .fill(self.theme.background_light)
+                        .rounding(Rounding::same(8.0))
+                        .stroke(Stroke::new(1.0, self.theme.neon_secondary))
+                        .show(ui, |ui| {
+                            self.draw_cpu_section(ui);
+                        });
+                });
+
+                ui.add_space(10.0);
+
+                // Right column for memory, disk, and network
+                ui.vertical(|ui| {
+                    // Memory Usage Card
+                    egui::Frame::none()
+                        .fill(self.theme.background_light)
+                        .rounding(Rounding::same(8.0))
+                        .stroke(Stroke::new(1.0, self.theme.neon_primary))
+                        .show(ui, |ui| {
+                            self.draw_memory_section(ui);
+                        });
+                    
+                    ui.add_space(10.0);
+                    
+                    // Disk Usage Card
+                    egui::Frame::none()
+                        .fill(self.theme.background_light)
+                        .rounding(Rounding::same(8.0))
+                        .stroke(Stroke::new(1.0, self.theme.neon_primary))
+                        .show(ui, |ui| {
+                            self.draw_disk_section(ui);
+                        });
+                    
+                    ui.add_space(10.0);
+                    
+                    // Network Usage Card
+                    egui::Frame::none()
+                        .fill(self.theme.background_light)
+                        .rounding(Rounding::same(8.0))
+                        .stroke(Stroke::new(1.0, self.theme.neon_primary))
+                        .show(ui, |ui| {
+                            self.draw_network_section(ui);
+                        });
+                });
+            });
+
+            // Settings window with clean design
+            if self.show_settings {
+                self.show_settings_window(ctx);
+            }
+        });
+
+        // Request continuous updates for animations
+        ctx.request_repaint();
+    }
+}
+
+impl CyberNinjaApp {
+    fn draw_system_info_section(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.heading(RichText::new("System Information").color(self.theme.text_bright));
+            ui.add_space(4.0);
+            
+            let (name, kernel, os_version, hostname) = self.monitor.get_system_info();
+            ui.label(RichText::new(format!("OS: {}", name)).color(self.theme.text_bright));
+            ui.label(RichText::new(format!("Kernel: {}", kernel)).color(self.theme.text_dim));
+            ui.label(RichText::new(format!("Version: {}", os_version)).color(self.theme.text_dim));
+            ui.label(RichText::new(format!("Hostname: {}", hostname)).color(self.theme.text_dim));
+            ui.add_space(8.0);
+        });
+    }
+
+    fn draw_cpu_section(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.heading(RichText::new("CPU Usage").color(self.theme.text_bright));
+            ui.add_space(4.0);
+            
+            for (name, usage) in self.monitor.get_cpu_usage() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&name).color(self.theme.text_dim));
+                    self.draw_value_bar(ui, usage / 100.0, self.theme.neon_secondary);
+                    ui.label(RichText::new(format!("{:.1}%", usage)).color(self.theme.text_bright));
+                });
+            }
+            ui.add_space(8.0);
+        });
+    }
+
+    fn draw_memory_section(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.heading(RichText::new("Memory Usage").color(self.theme.text_bright));
+            ui.add_space(4.0);
+            
+            let (total, used, usage) = self.monitor.get_memory_info();
+            ui.label(RichText::new(format!("Total: {:.1} GB", total as f64 / 1024.0 / 1024.0 / 1024.0)).color(self.theme.text_bright));
+            ui.label(RichText::new(format!("Used: {:.1} GB", used as f64 / 1024.0 / 1024.0 / 1024.0)).color(self.theme.text_dim));
+            self.draw_value_bar(ui, usage / 100.0, self.theme.neon_primary);
+            ui.label(RichText::new(format!("Usage: {:.1}%", usage)).color(self.theme.text_bright));
+            ui.add_space(8.0);
+        });
+    }
+
+    fn draw_disk_section(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.heading(RichText::new("Disk Usage").color(self.theme.text_bright));
+            ui.add_space(4.0);
+            
+            for (mount_point, total, available) in self.monitor.get_disk_info() {
+                let used = total - available;
+                let usage = (used as f64 / total as f64) * 100.0;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&mount_point).color(self.theme.text_dim));
+                    self.draw_value_bar(ui, usage as f32 / 100.0, self.theme.neon_primary);
+                    ui.label(RichText::new(format!("{:.1}%", usage)).color(self.theme.text_bright));
+                });
+                ui.label(RichText::new(format!("{:.1} GB free of {:.1} GB",
+                    available as f64 / 1024.0 / 1024.0 / 1024.0,
+                    total as f64 / 1024.0 / 1024.0 / 1024.0
+                )).color(self.theme.text_dim));
+            }
+            ui.add_space(8.0);
+        });
+    }
+
+    fn draw_network_section(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.heading(RichText::new("Network Usage").color(self.theme.text_bright));
+            ui.add_space(4.0);
+            
+            for (interface, rx, tx) in self.monitor.get_network_info() {
+                ui.label(RichText::new(&interface).color(self.theme.text_bright));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Download:").color(self.theme.text_dim));
+                    ui.label(RichText::new(format!("{:.2} MB/s", rx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Upload:").color(self.theme.text_dim));
+                    ui.label(RichText::new(format!("{:.2} MB/s", tx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
+                });
+            }
+            ui.add_space(8.0);
         });
     }
 }
@@ -623,306 +1122,48 @@ fn load_svg_icon(ctx: &egui::Context, svg_data: &[u8]) -> egui::TextureHandle {
 }
 
 impl eframe::App for CyberNinjaApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Refresh all monitoring systems
-        self.monitor.refresh();
-        self.system.refresh_cpu();
-        self.system.refresh_memory();
-        
-        // Update network stats
-        let network_info = self.monitor.get_network_info();
-        if let Some((_, rx, tx)) = network_info.first() {
-            self.network_stats.update(*rx, *tx);
-        }
-
-        self.check_system_warnings();
-        let elapsed = self.start_time.elapsed().as_secs_f32();
-        self.neon_pulse = (elapsed * 2.0).sin() * 0.5 + 0.5;
-        
-        // Set dark theme
-        let mut visuals = egui::Visuals::dark();
-        visuals.window_fill = Color32::from_rgb(13, 17, 23);
-        ctx.set_visuals(visuals);
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let rect = ui.max_rect();
-            
-            // Draw background
-            ui.painter().rect_filled(
-                rect,
-                0.0,
-                self.theme.background_dark,
-            );
-            
-            // Draw animated grid with fade effect
-            self.draw_grid(ui, rect);
-            
-            // Draw spinning shurikens
-            self.draw_shurikens(ui);
-            
-            // Top bar with cyberpunk style
-            let top_bar_height = theme::HEADER_HEIGHT;
-            let top_bar_rect = Rect::from_min_size(
-                rect.min,
-                Vec2::new(rect.width(), top_bar_height),
-            );
-            
-            // Draw neon frame around top bar
-            self.draw_neon_frame(ui, top_bar_rect);
-            
-            // Title with neon effect
-            ui.painter().text(
-                top_bar_rect.center(),
-                Align2::CENTER_CENTER,
-                "CYBER NINJA",
-                FontId::monospace(24.0),
-                self.theme.neon_primary,
-            );
-
-            // Audio controls in top bar
-            let audio_controls_rect = Rect::from_min_size(
-                Pos2::new(top_bar_rect.min.x + 10.0, top_bar_rect.min.y + 5.0),
-                Vec2::new(300.0, top_bar_height - 10.0),
-            );
-            let mut audio_ui = ui.child_ui(audio_controls_rect, egui::Layout::left_to_right(egui::Align::Center));
-            self.show_audio_controls(&mut audio_ui);
-
-            // Settings button (moved to right side)
-            let settings_btn_rect = Rect::from_min_size(
-                Pos2::new(rect.max.x - 100.0, top_bar_rect.min.y + 10.0),
-                Vec2::new(80.0, 30.0),
-            );
-
-            if ui.put(
-                settings_btn_rect,
-                egui::Button::new(
-                    RichText::new("Settings")
-                        .color(self.theme.text_bright)
-                )
-            ).clicked() {
-                self.show_settings = !self.show_settings;
-            }
-
-            // Main content area
-            let content_rect = rect.shrink2(Vec2::new(20.0, top_bar_height + 20.0));
-            let mut content_ui = ui.child_ui(content_rect, egui::Layout::top_down(egui::Align::LEFT));
-
-            // System Info Section with cyberpunk styling
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "System Information", self.theme.neon_primary);
-                ui.horizontal(|ui| {
-                    if let Some(cpu_icon) = &self.cpu_icon {
-                        ui.add(egui::Image::new(cpu_icon).max_size(Vec2::new(24.0, 24.0)));
-                    }
-                    ui.vertical(|ui| {
-                        let (name, kernel, os_version, hostname) = self.monitor.get_system_info();
-                        ui.label(RichText::new(format!("OS: {}", name)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("Kernel: {}", kernel)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("Version: {}", os_version)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("Hostname: {}", hostname)).color(self.theme.text_bright));
-                    });
-                });
-            });
-
-            // CPU Section
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "CPU Usage", self.theme.neon_secondary);
-                ui.horizontal(|ui| {
-                    if let Some(cpu_icon) = &self.cpu_icon {
-                        ui.add(egui::Image::new(cpu_icon).max_size(Vec2::new(24.0, 24.0)));
-                    }
-                    ui.vertical(|ui| {
-                        for (name, usage) in self.monitor.get_cpu_usage() {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&name).color(self.theme.text_dim));
-                                self.draw_value_bar(ui, usage / 100.0, self.theme.neon_secondary);
-                                ui.label(RichText::new(format!("{:.1}%", usage)).color(self.theme.text_bright));
-                            });
-                        }
-                    });
-                });
-            });
-
-            // Memory Section
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "Memory Usage", self.theme.neon_primary);
-                ui.horizontal(|ui| {
-                    if let Some(memory_icon) = &self.memory_icon {
-                        ui.add(egui::Image::new(memory_icon).max_size(Vec2::new(24.0, 24.0)));
-                    }
-                    ui.vertical(|ui| {
-                        let (total, used, usage) = self.monitor.get_memory_info();
-                        ui.label(RichText::new(format!("Total: {} GB", total / 1024 / 1024 / 1024)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("Used: {} GB", used / 1024 / 1024 / 1024)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("Usage: {:.1}%", usage)).color(self.theme.text_bright));
-                    });
-                });
-            });
-
-            // Disk Section
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "Disk Usage", self.theme.neon_primary);
-                ui.horizontal(|ui| {
-                    if let Some(disk_icon) = &self.disk_icon {
-                        ui.add(egui::Image::new(disk_icon).max_size(Vec2::new(24.0, 24.0)));
-                    }
-                    ui.vertical(|ui| {
-                        for (mount_point, total, available) in self.monitor.get_disk_info() {
-                            let used = total - available;
-                            let usage = (used as f64 / total as f64) * 100.0;
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("{}: {:.1}% ({:.1} GB free of {:.1} GB)",
-                                    mount_point,
-                                    usage,
-                                    available as f64 / 1024.0 / 1024.0 / 1024.0,
-                                    total as f64 / 1024.0 / 1024.0 / 1024.0
-                                )).color(self.theme.text_dim));
-                            });
-                        }
-                    });
-                });
-            });
-
-            // Network Usage Section
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "Network Usage", self.theme.neon_primary);
-                for (interface, rx, tx) in self.monitor.get_network_info() {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&interface).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("↓ {:.2} MB/s", rx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
-                        ui.label(RichText::new(format!("↑ {:.2} MB/s", tx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
-                    });
-                }
-            });
-
-            // Top Processes Section
-            content_ui.group(|ui| {
-                self.draw_section_header(ui, "Top Processes", self.theme.neon_primary);
-                let mut processes = self.monitor.get_process_info();
-                processes.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-                for (pid, name, cpu_usage) in processes.iter().take(5) {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("[{}] {}", pid, name)).color(self.theme.text_bright));
-                        ui.add(egui::ProgressBar::new(*cpu_usage / 100.0)
-                            .text(format!("{:.1}%", cpu_usage))
-                            .fill(Color32::from_rgb(
-                                (255.0 * cpu_usage / 100.0) as u8,
-                                (255.0 * (1.0 - cpu_usage / 100.0)) as u8,
-                                0,
-                            ))
-                        );
-                    });
-                }
-            });
-
-            // Settings window
-            if self.show_settings {
-                self.show_settings_window(ctx);
-            }
-
-            // Draw glitch effect when alerts are active
-            if let Some(start_time) = &self.alert_glitch {
-                let elapsed = start_time.elapsed().as_secs_f32();
-                if elapsed < 3.0 {
-                    let glitch_intensity = (1.0 - elapsed / 3.0) * 
-                        ((elapsed * theme::GLITCH_INTERVAL).sin() * 0.5 + 0.5);
-                    let warning_color = Color32::from_rgba_premultiplied(
-                        self.theme.neon_alert.r(),
-                        self.theme.neon_alert.g(),
-                        self.theme.neon_alert.b(),
-                        (255.0 * glitch_intensity) as u8,
-                    );
-                    
-                    // Random offset for glitch effect
-                    let offset = (elapsed * 10.0).sin() * 5.0;
-                    
-                    ui.painter().text(
-                        rect.center() + Vec2::new(offset, 0.0),
-                        Align2::CENTER_CENTER,
-                        "SYSTEM ALERT",
-                        FontId::monospace(32.0),
-                        warning_color,
-                    );
-                } else {
-                    self.alert_glitch = None;
-                }
-            }
-
-            // Update warp effect intensity
-            if self.personality.is_1337_mode {
-                self.warp_effect_intensity = (self.warp_effect_intensity + 0.1).min(1.0);
-            } else {
-                self.warp_effect_intensity = (self.warp_effect_intensity - 0.1).max(0.0);
-            }
-
-            // Apply warp speed visual effects
-            if self.warp_effect_intensity > 0.0 {
-                let rect = ctx.screen_rect();
-                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("warp_effect")));
-                
-                // Create warp tunnel effect
-                let num_lines = 50;
-                for i in 0..num_lines {
-                    let t = i as f32 / num_lines as f32;
-                    let alpha = (1.0 - t) * self.warp_effect_intensity * 0.5;
-                    let color = Color32::from_rgba_premultiplied(
-                        self.theme.neon_primary.r(),
-                        self.theme.neon_primary.g(),
-                        self.theme.neon_primary.b(),
-                        (alpha * 255.0) as u8,
-                    );
-                    
-                    let center = rect.center();
-                    let radius = t * rect.width() * self.warp_effect_intensity;
-                    let points = (0..36).map(|j| {
-                        let angle = j as f32 * std::f32::consts::PI * 2.0 / 36.0;
-                        let x = center.x + angle.cos() * radius;
-                        let y = center.y + angle.sin() * radius;
-                        Pos2::new(x, y)
-                    }).collect::<Vec<_>>();
-                    
-                    painter.add(egui::Shape::line(points, Stroke::new(2.0, color)));
-                }
-
-                // Add random "stars" streaking effect
-                let num_stars = (50.0 * self.warp_effect_intensity) as i32;
-                for _ in 0..num_stars {
-                    let x = rand::random::<f32>() * rect.width();
-                    let y = rand::random::<f32>() * rect.height();
-                    let length = 20.0 * self.warp_effect_intensity;
-                    
-                    painter.line_segment(
-                        [
-                            Pos2::new(rect.min.x + x, rect.min.y + y),
-                            Pos2::new(rect.min.x + x + length, rect.min.y + y),
-                        ],
-                        Stroke::new(1.0, self.theme.neon_secondary),
-                    );
-                }
-            }
-        });
-
-        // Request continuous updates for animations
-        ctx.request_repaint();
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update(ctx, _frame);
     }
 }
 
-fn main() -> eframe::Result<()> {
-    dotenv().ok();
-    
-    let options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_inner_size([1024.0, 768.0])
-            .with_decorations(true)
-            .with_transparent(true),
+fn main() {
+    // Load environment variables from .env file
+    dotenv::dotenv().ok();
+    println!("Environment variables loaded from .env file");
+
+    let native_options = NativeOptions {
+        renderer: eframe::Renderer::Glow,
+        multisampling: 0,
+        depth_buffer: 0,
+        hardware_acceleration: eframe::HardwareAcceleration::Required,
+        vsync: true,
+        follow_system_theme: false,
+        default_theme: eframe::Theme::Dark,
+        window_builder: Some(Box::new(|builder| {
+            builder
+                .with_min_inner_size([800.0, 600.0])
+                .with_inner_size([1024.0, 768.0])
+        })),
         ..Default::default()
     };
-    
-    eframe::run_native(
-        "CyberNinja System Monitor",
-        options,
-        Box::new(|cc| Box::new(CyberNinjaApp::new(cc))),
-    )
+
+    // Initialize window with error handling
+    println!("Initializing window...");
+    match eframe::run_native(
+        "Cyber Ninja Monitor",
+        native_options,
+        Box::new(|cc| {
+            println!("Creating application instance...");
+            Box::new(CyberNinjaApp::new(cc))
+        })
+    ) {
+        Ok(_) => println!("Application closed successfully"),
+        Err(e) => {
+            eprintln!("Error running application: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -956,5 +1197,79 @@ mod tests {
             assert_eq!(stats.bytes_received, 2000);
             assert_eq!(stats.bytes_sent, 1000);
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use eframe::{Frame, NativeOptions};
+    use egui::Context;
+
+    pub fn create_test_app() -> CyberNinjaApp {
+        let theme = theme::CyberTheme::default();
+        CyberNinjaApp {
+            system: System::new_all(),
+            start_time: Instant::now(),
+            neon_pulse: 0.0,
+            tts: None,
+            last_cpu_warning: None,
+            last_memory_warning: None,
+            last_status_update: Instant::now(),
+            show_settings: false,
+            settings_volume: 0.8,
+            settings_cpu_threshold: 80.0,
+            settings_update_interval: 1.0,
+            network_stats: NetworkStats::new(),
+            cpu_icon: None,
+            memory_icon: None,
+            disk_icon: None,
+            alert_glitch: None,
+            monitor: SystemMonitor::new(),
+            personality: AIPersonality::default(),
+            editing_catchphrase: String::new(),
+            theme: theme.clone(),
+            shurikens: Vec::new(),
+            last_frame_time: Instant::now(),
+            warp_effect_intensity: 0.0,
+            particle_system: ParticleSystem::new(theme),
+            hologram_phase: 0.0,
+            runtime: Runtime::new().unwrap(),
+        }
+    }
+
+    pub fn create_mock_frame() -> Frame {
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn test_window_creation() {
+        let native_options = NativeOptions {
+            renderer: eframe::Renderer::Glow,
+            multisampling: 0,
+            depth_buffer: 0,
+            hardware_acceleration: eframe::HardwareAcceleration::Required,
+            vsync: true,
+            follow_system_theme: false,
+            default_theme: eframe::Theme::Dark,
+            ..Default::default()
+        };
+        // ... existing code ...
+    }
+
+    #[test]
+    fn test_window_settings() {
+        let ctx = Context::default();
+        let mut app = create_test_app();
+        let mut frame = create_mock_frame();
+        // ... existing code ...
+    }
+
+    #[test]
+    fn test_ui_layout() {
+        let ctx = Context::default();
+        let mut app = create_test_app();
+        let mut frame = create_mock_frame();
+        // ... existing code ...
     }
 } 
