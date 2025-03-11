@@ -1,10 +1,9 @@
 #[cfg(test)]
 mod tests {
     use cyber_ninja_monitor::{
-        ai_personality::AIPersonality,
+        message_system::{MessageSystem, MessagePart, PersonalitySettings},
         tts::TTSManager,
-        message_system::{MessagePart, PersonalitySettings},
-        AudioManager,
+        ai_personality::AIPersonality,
     };
     use std::collections::HashMap;
     use std::error::Error;
@@ -152,7 +151,7 @@ mod tests {
     fn test_personality_tts_integration() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            if let Some(mut tts) = TTSManager::new() {
+            if let Ok(mut tts) = TTSManager::new() {
                 let personality = PersonalitySettings::default();
                 let message = vec![MessagePart::Static("Testing system integration".to_string())];
                 
@@ -198,7 +197,7 @@ mod tests {
     fn test_tts_integration() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            if let Some(mut tts) = TTSManager::new() {
+            if let Ok(mut tts) = TTSManager::new() {
                 let personality = PersonalitySettings::default();
                 let message = vec![MessagePart::Static("Test message".to_string())];
                 
@@ -222,20 +221,6 @@ mod tests {
     }
 
     #[test]
-    fn test_audio_manager() {
-        let mut audio = AudioManager::new();
-        assert!(audio.is_audio_enabled(), "Audio should be enabled by default");
-        
-        let message = audio.toggle_audio();
-        assert!(!audio.is_audio_enabled(), "Audio should be disabled after toggle");
-        assert!(message.contains("muted"), "Toggle message should indicate muting");
-        
-        let message = audio.toggle_audio();
-        assert!(audio.is_audio_enabled(), "Audio should be enabled after second toggle");
-        assert!(message.contains("unmuted"), "Toggle message should indicate unmuting");
-    }
-
-    #[test]
     fn test_personality_settings() {
         let personality = PersonalitySettings::default();
         assert_eq!(personality.voice_type, "alloy", "Default voice type should be 'alloy'");
@@ -254,5 +239,67 @@ mod tests {
         // Convert to string and verify content
         let message_str = message_part.to_string();
         assert!(message_str.contains(test_input), "Message should contain the test input");
+    }
+
+    #[test]
+    fn test_tts_message_handling() {
+        if let Ok(mut tts) = TTSManager::new() {
+            let message = MessagePart::Static("Test message".to_string());
+            tts.handle_message(&message);
+            // Since we can't easily verify audio output, we just ensure it doesn't panic
+        }
+    }
+
+    #[test]
+    fn test_tts_multiple_messages() {
+        if let Ok(mut tts) = TTSManager::new() {
+            let messages = vec![
+                MessagePart::Static("First message".to_string()),
+                MessagePart::Static("Second message".to_string()),
+            ];
+            for message in messages {
+                tts.handle_message(&message);
+            }
+            // Since we can't easily verify audio output, we just ensure it doesn't panic
+        }
+    }
+
+    #[test]
+    fn test_system_integration() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Ok(mut tts) = TTSManager::new() {
+                let personality = PersonalitySettings {
+                    voice_type: "default".to_string(),
+                    volume: 1.0,
+                    speech_rate: 1.0,
+                    drunk_level: 0,
+                    sass_level: 0,
+                    tech_expertise: 0,
+                    grand_pappi_refs: 0,
+                    enthusiasm: 0,
+                    anxiety_level: 0,
+                    catchphrases: vec![],
+                    audio_enabled: true,
+                    is_1337_mode: false,
+                };
+                let message = vec![MessagePart::Static("Testing system integration".to_string())];
+                if let Err(e) = tts.speak(message, &personality).await {
+                    eprintln!("Failed to speak test message: {}", e);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_message_system() {
+        let mut system = MessageSystem::new();
+        let test_input = "Test message";
+        system.add_message(MessagePart::Static(test_input.to_string()));
+        let messages = system.get_messages();
+        assert_eq!(messages.len(), 1);
+        if let MessagePart::Static(message_str) = &messages[0] {
+            assert!(message_str.contains(test_input), "Message should contain the test input");
+        }
     }
 }

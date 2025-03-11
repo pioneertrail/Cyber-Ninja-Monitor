@@ -2,9 +2,9 @@
 **/*.rs.bk
 Cargo.lock
 .env
-/cache/
-*.mp3
-.DS_Store
 .idea/
 .vscode/
-*.pdb 
+*.pdb
+cache/
+*.mp3
+.DS_Store 

@@ -1,20 +1,27 @@
-use eframe::NativeOptions;
 use eframe::egui::{
-    self, Color32, Pos2, RichText, Rect, vec2, TextureHandle, Vec2, Align2, FontId, Stroke, pos2,
-    Rounding, ViewportBuilder,
+    self, Color32, FontId, Pos2, Rect, RichText, Rounding,
+    Stroke, Vec2, pos2, vec2, TextureHandle, Align2,
 };
-use crate::message_system::{SystemData, generate_message, MessagePart, PersonalitySettings};
-use crate::theme::{SCAN_LINE_SPEED, HOLOGRAM_FLICKER_SPEED, BLOOM_INTENSITY, FOG_DENSITY, HOLOGRAM_OPACITY, CyberTheme};
-use crate::system_monitor::SystemMonitor;
-use crate::ai_personality::AIPersonality;
-use crate::tts::TTSManager;
+use eframe::NativeOptions;
+use std::time::{Duration, Instant};
+use sysinfo::{System, SystemExt};
+use egui_extras::RetainedImage;
+use crate::{
+    theme::{
+        ACCENT_COLOR, BACKGROUND_COLOR, BACKGROUND_DARK, FOREGROUND_COLOR, FOREGROUND_DIM,
+        SCAN_LINE_SPEED, HOLOGRAM_FLICKER_SPEED, BLOOM_INTENSITY,
+        FOG_DENSITY, HOLOGRAM_OPACITY, CyberTheme,
+    },
+    particles::ParticleSystem,
+    system_monitor::SystemMonitor,
+    message_system::{MessageSystem, MessagePart, SystemData, generate_message, PersonalitySettings},
+    tts::TTSManager,
+    ai_personality::AIPersonality,
+};
 use tokio::runtime::Runtime;
 use egui::Context;
-use std::time::{Instant, Duration};
-use sysinfo::{System, SystemExt, CpuExt};
 use dotenv::dotenv;
 use rand::Rng;
-use crate::particles::ParticleSystem;
 use usvg::TreeParsing;
 
 mod tts;
@@ -62,17 +69,40 @@ impl NetworkStats {
 
 // Main application state
 pub struct CyberNinjaApp {
-    system: System,
-    start_time: Instant,
-    neon_pulse: f32,
-    tts: Option<TTSManager>,
-    last_cpu_warning: Option<Instant>,
-    last_memory_warning: Option<Instant>,
-    last_status_update: Instant,
+    // System components
+    system_monitor: SystemMonitor,
+    message_system: MessageSystem,
+    tts_manager: Option<TTSManager>,
+    ai_personality: AIPersonality,
+    runtime: Runtime,
+
+    // UI state
     show_settings: bool,
-    settings_volume: f32,
-    settings_cpu_threshold: f32,
-    settings_update_interval: f32,
+    show_system_info: bool,
+    show_message_log: bool,
+    show_personality_settings: bool,
+    show_audio_settings: bool,
+
+    // Performance metrics
+    fps_history: Vec<f32>,
+    last_frame_time: Instant,
+    frame_times: Vec<f32>,
+
+    // Visual effects
+    scan_line_offset: f32,
+    hologram_flicker: f32,
+
+    // Message history
+    message_history: Vec<String>,
+    last_message_time: Instant,
+
+    // System resources
+    system: System,
+    last_update: Instant,
+    cpu_history: Vec<f32>,
+    memory_history: Vec<f32>,
+    disk_history: Vec<f32>,
+    network_history: Vec<f32>,
     network_stats: NetworkStats,
     cpu_icon: Option<TextureHandle>,
     memory_icon: Option<TextureHandle>,
@@ -81,13 +111,18 @@ pub struct CyberNinjaApp {
     monitor: SystemMonitor,
     personality: AIPersonality,
     editing_catchphrase: String,
-    theme: theme::CyberTheme,
+    theme: CyberTheme,
     shurikens: Vec<theme::Shuriken>,
-    last_frame_time: Instant,
     warp_effect_intensity: f32,
     particle_system: ParticleSystem,
     hologram_phase: f32,
-    runtime: Runtime,
+    start_time: Instant,
+    last_cpu_warning: Option<Instant>,
+    last_memory_warning: Option<Instant>,
+    last_status_update: Instant,
+    settings_cpu_threshold: f32,
+    settings_update_interval: u32,
+    neon_pulse: f32,
 }
 
 impl CyberNinjaApp {
@@ -104,17 +139,29 @@ impl CyberNinjaApp {
         let theme = theme::CyberTheme::default();
         
         let mut app = Self {
-            system: System::new_all(),
-            start_time: Instant::now(),
-            neon_pulse: 0.0,
-            tts: None,
-            last_cpu_warning: None,
-            last_memory_warning: None,
-            last_status_update: Instant::now(),
+            system_monitor: SystemMonitor::new(),
+            message_system: MessageSystem::new(),
+            tts_manager: Some(TTSManager::new().expect("Failed to initialize TTS system")),
+            ai_personality: AIPersonality::default(),
+            runtime,
             show_settings: false,
-            settings_volume: 0.8,
-            settings_cpu_threshold: 80.0,
-            settings_update_interval: 300.0,
+            show_system_info: true,
+            show_message_log: false,
+            show_personality_settings: false,
+            show_audio_settings: false,
+            fps_history: Vec::new(),
+            last_frame_time: Instant::now(),
+            frame_times: Vec::new(),
+            scan_line_offset: 0.0,
+            hologram_flicker: 0.0,
+            message_history: Vec::new(),
+            last_message_time: Instant::now(),
+            system: System::new_all(),
+            last_update: Instant::now(),
+            cpu_history: Vec::new(),
+            memory_history: Vec::new(),
+            disk_history: Vec::new(),
+            network_history: Vec::new(),
             network_stats: NetworkStats::new(),
             cpu_icon: None,
             memory_icon: None,
@@ -125,11 +172,16 @@ impl CyberNinjaApp {
             editing_catchphrase: String::new(),
             theme: theme.clone(),
             shurikens: Vec::new(),
-            last_frame_time: Instant::now(),
             warp_effect_intensity: 0.0,
             particle_system: ParticleSystem::new(theme),
             hologram_phase: 0.0,
-            runtime,
+            start_time: Instant::now(),
+            last_cpu_warning: None,
+            last_memory_warning: None,
+            last_status_update: Instant::now(),
+            settings_cpu_threshold: 80.0,
+            settings_update_interval: 30,
+            neon_pulse: 0.5,
         };
         
         // Print current working directory and environment variables for debugging
@@ -137,19 +189,31 @@ impl CyberNinjaApp {
         println!("OPENAI_API_KEY exists: {:?}", std::env::var("OPENAI_API_KEY").is_ok());
         
         println!("Initializing TTS system...");
-        if let Some(mut tts) = TTSManager::new() {
+        if let Some(tts) = &mut app.tts_manager {
             println!("TTS system initialized successfully");
             let startup_message = vec![
                 MessagePart::Static("CyberNinja Monitor initialized.".to_string())
             ];
-            let settings = app.personality.to_settings();
+            let personality = PersonalitySettings {
+                voice_type: "default".to_string(),
+                volume: 1.0,
+                speech_rate: 1.0,
+                drunk_level: 0,
+                sass_level: 0,
+                tech_expertise: 0,
+                grand_pappi_refs: 0,
+                enthusiasm: 0,
+                anxiety_level: 0,
+                catchphrases: vec![],
+                audio_enabled: true,
+                is_1337_mode: false,
+            };
             println!("Attempting to speak startup message...");
             app.runtime.block_on(async {
-                if let Err(e) = tts.speak(startup_message, &settings).await {
+                if let Err(e) = tts.speak(startup_message, &personality).await {
                     eprintln!("Failed to speak startup message: {}", e);
                 }
             });
-            app.tts = Some(tts);
         } else {
             eprintln!("Failed to initialize TTS system");
         }
@@ -239,18 +303,21 @@ impl CyberNinjaApp {
     }
 
     fn check_system_warnings(&mut self) {
-        if let Some(tts) = &mut self.tts {
+        if let Some(tts) = &mut self.tts_manager {
             let data = SystemData {
-                cpu_usage: self.system.global_cpu_info().cpu_usage(),
-                memory_used: self.system.used_memory(),
-                memory_total: self.system.total_memory(),
-                disk_usage: 0.0, // We'll update this when needed
-                network_rx: 0,
-                network_tx: 0,
+                cpu_usage: self.system_monitor.get_cpu_usage(),
+                memory_total: self.system_monitor.get_memory_usage().0,
+                memory_used: self.system_monitor.get_memory_usage().1,
+                memory_usage: self.system_monitor.get_memory_usage().2,
+                disk_total: self.system_monitor.get_disk_usage()[0].1,
+                disk_available: self.system_monitor.get_disk_usage()[0].2,
+                disk_usage: self.system_monitor.get_disk_usage()[0].3,
+                network_rx: self.system_monitor.get_network_usage()[0].1,
+                network_tx: self.system_monitor.get_network_usage()[0].2,
             };
 
-            // CPU warning (every 30 seconds)
-            if data.cpu_usage > self.settings_cpu_threshold {
+            // Check if any CPU is above threshold
+            if data.cpu_usage.iter().any(|(_, usage)| *usage > self.settings_cpu_threshold) {
                 if self.last_cpu_warning
                     .map_or(true, |last| last.elapsed().as_secs() > 30)
                 {
@@ -325,8 +392,8 @@ impl CyberNinjaApp {
                                     ui.selectable_value(&mut self.personality.voice_type, "shimmer".to_string(), "Shimmer");
                                 });
                             
-                            if ui.button("Apply Voice").clicked() && self.tts.is_some() {
-                                if let Some(tts) = &mut self.tts {
+                            if ui.button("Apply Voice").clicked() && self.tts_manager.is_some() {
+                                if let Some(tts) = &mut self.tts_manager {
                                     tts.set_voice_type(self.personality.voice_type.clone());
                                 }
                             }
@@ -339,7 +406,7 @@ impl CyberNinjaApp {
                         // Audio test and mute buttons
                         ui.horizontal(|ui| {
                             if ui.button("🔊 Test Audio").clicked() {
-                                if let Some(tts) = &mut self.tts {
+                                if let Some(tts) = &mut self.tts_manager {
                                     // Create a test message that will demonstrate personality traits
                                     let test_message = if self.personality.drunk_level > 0.5 {
                                         "Hey there, let's test these awesome settings!"
@@ -371,7 +438,7 @@ impl CyberNinjaApp {
                             
                             if ui.button(if self.personality.audio_enabled { "🔊 Mute" } else { "🔈 Unmute" }).clicked() {
                                 self.personality.audio_enabled = !self.personality.audio_enabled;
-                                if let Some(tts) = &mut self.tts {
+                                if let Some(tts) = &mut self.tts_manager {
                                     tts.set_audio_enabled(self.personality.audio_enabled);
                                     let message = vec![MessagePart::Static("Audio toggled".to_string())];
                                     let settings = self.personality.to_settings();
@@ -387,16 +454,16 @@ impl CyberNinjaApp {
                         ui.add_space(4.0);
                         if ui.add(egui::Slider::new(&mut self.personality.volume, 0.0..=1.0)
                             .text("Volume")
-                            .clamp_to_range(true)).changed() && self.tts.is_some() {
-                            if let Some(tts) = &mut self.tts {
+                            .clamp_to_range(true)).changed() && self.tts_manager.is_some() {
+                            if let Some(tts) = &mut self.tts_manager {
                                 tts.set_volume(self.personality.volume);
                             }
                         }
                         
                         if ui.add(egui::Slider::new(&mut self.personality.speech_rate, 0.5..=2.0)
                             .text("Speech Rate")
-                            .clamp_to_range(true)).changed() && self.tts.is_some() {
-                            if let Some(tts) = &mut self.tts {
+                            .clamp_to_range(true)).changed() && self.tts_manager.is_some() {
+                            if let Some(tts) = &mut self.tts_manager {
                                 tts.set_speech_rate(self.personality.speech_rate);
                             }
                         }
@@ -431,7 +498,7 @@ impl CyberNinjaApp {
                         
                         // Test personality button
                         if ui.button("Test Personality").clicked() {
-                            if let Some(tts) = &mut self.tts {
+                            if let Some(tts) = &mut self.tts_manager {
                                 let message = vec![MessagePart::Static("Testing personality settings".to_string())];
                                 let settings = self.personality.to_settings();
                                 self.runtime.block_on(async {
@@ -481,7 +548,7 @@ impl CyberNinjaApp {
                 ui.separator();
                 if ui.button("🚪 Exit Application").clicked() {
                     let exit_message = self.personality.get_exit_message();
-                    if let Some(tts) = &mut self.tts {
+                    if let Some(tts) = &mut self.tts_manager {
                         let message = vec![MessagePart::Static(exit_message)];
                         let settings = self.personality.to_settings();
                         self.runtime.block_on(async {
@@ -675,15 +742,21 @@ impl CyberNinjaApp {
             );
 
             if ui.add(warp_btn).clicked() {
-                if let Some(tts) = &mut self.tts {
+                if let Some(tts) = &mut self.tts_manager {
                     let message = vec![MessagePart::Static("Warp mode activated".to_string())];
                     let personality = PersonalitySettings {
+                        voice_type: "default".to_string(),
+                        volume: 1.0,
+                        speech_rate: 1.0,
                         drunk_level: 0,
                         sass_level: 0,
+                        tech_expertise: 0,
+                        grand_pappi_refs: 0,
                         enthusiasm: 0,
                         anxiety_level: 0,
-                        grand_pappi_refs: 0,
-                        voice_type: "alloy".to_string(),
+                        catchphrases: vec![],
+                        audio_enabled: true,
+                        is_1337_mode: false,
                     };
                     self.runtime.block_on(async {
                         let _ = tts.speak(message, &personality).await;
@@ -692,15 +765,21 @@ impl CyberNinjaApp {
             }
 
             if ui.button(if self.personality.audio_enabled { "🔊 Mute" } else { "🔈 Unmute" }).clicked() {
-                if let Some(tts) = &mut self.tts {
+                if let Some(tts) = &mut self.tts_manager {
                     let message = vec![MessagePart::Static("Audio toggled".to_string())];
                     let personality = PersonalitySettings {
+                        voice_type: "default".to_string(),
+                        volume: 1.0,
+                        speech_rate: 1.0,
                         drunk_level: 0,
                         sass_level: 0,
+                        tech_expertise: 0,
+                        grand_pappi_refs: 0,
                         enthusiasm: 0,
                         anxiety_level: 0,
-                        grand_pappi_refs: 0,
-                        voice_type: "alloy".to_string(),
+                        catchphrases: vec![],
+                        audio_enabled: true,
+                        is_1337_mode: false,
                     };
                     self.runtime.block_on(async {
                         let _ = tts.speak(message, &personality).await;
@@ -839,10 +918,7 @@ impl CyberNinjaApp {
         self.system.refresh_memory();
         
         // Update network stats
-        let network_info = self.monitor.get_network_info();
-        if let Some((_, rx, tx)) = network_info.first() {
-            self.network_stats.update(*rx, *tx);
-        }
+        self.update_system_info();
 
         self.check_system_warnings();
         let elapsed = self.start_time.elapsed().as_secs_f32();
@@ -988,98 +1064,146 @@ impl CyberNinjaApp {
         // Request continuous updates for animations
         ctx.request_repaint();
     }
+
+    fn update_system_info(&mut self) {
+        let network_info = self.monitor.get_network_usage();
+        if let Some((_, rx, tx)) = network_info.first() {
+            self.network_stats.update(*rx, *tx);
+        }
+    }
+
+    fn draw_system_info_section(&mut self, ui: &mut egui::Ui) {
+        // Memory info
+        let (total, used, usage) = self.monitor.get_memory_usage();
+        ui.label(format!("Memory: {:.1}%", usage));
+        ui.label(format!("{:.1} GB / {:.1} GB", used as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+
+        // Disk info
+        for (mount_point, total, available, usage) in self.monitor.get_disk_usage() {
+            ui.label(format!("Disk {}: {:.1}%", mount_point, usage));
+            ui.label(format!("{:.1} GB free of {:.1} GB", available as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+        }
+
+        // Network info
+        for (interface, rx, tx) in self.monitor.get_network_usage() {
+            ui.label(format!("Network {}: ↓{:.1} MB/s ↑{:.1} MB/s", interface, rx as f64 / 1_000_000.0, tx as f64 / 1_000_000.0));
+        }
+    }
+
+    fn draw_cpu_section(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.heading("CPU Usage");
+            ui.separator();
+
+            for (name, usage) in self.monitor.get_cpu_usage() {
+                ui.horizontal(|ui| {
+                    ui.label(name);
+                    ui.label(format!("{:.1}%", usage));
+                });
+            }
+        });
+    }
+
+    fn draw_memory_section(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.heading("Memory Usage");
+            ui.separator();
+
+            let (total, used, usage) = self.monitor.get_memory_usage();
+            ui.label(format!("Total: {:.1} GB", total as f64 / 1_073_741_824.0));
+            ui.label(format!("Used: {:.1} GB", used as f64 / 1_073_741_824.0));
+            ui.label(format!("Usage: {:.1}%", usage));
+        });
+    }
+
+    fn draw_disk_section(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.heading("Disk Usage");
+            ui.separator();
+
+            for (mount_point, total, available, usage) in self.monitor.get_disk_usage() {
+                ui.horizontal(|ui| {
+                    ui.label(mount_point);
+                    ui.label(format!("{:.1} GB / {:.1} GB",
+                        available as f64 / 1_073_741_824.0,
+                        total as f64 / 1_073_741_824.0,
+                    ));
+                });
+            }
+        });
+    }
+
+    fn draw_network_section(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.heading("Network Usage");
+            ui.separator();
+
+            for (interface, rx, tx) in self.monitor.get_network_usage() {
+                ui.horizontal(|ui| {
+                    ui.label(interface);
+                    ui.label(format!("RX: {:.1} MB/s, TX: {:.1} MB/s",
+                        rx as f64 / 1_048_576.0,
+                        tx as f64 / 1_048_576.0,
+                    ));
+                });
+            }
+        });
+    }
+
+    fn draw_system_metrics(&mut self, ui: &mut egui::Ui) {
+        // Memory info
+        let (total, used, usage) = self.monitor.get_memory_usage();
+        ui.label(format!("Memory: {:.1}%", usage));
+        ui.label(format!("{:.1} GB / {:.1} GB", used as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+
+        // Disk info
+        for (mount_point, total, available, usage) in self.monitor.get_disk_usage() {
+            ui.label(format!("Disk {}: {:.1}%", mount_point, usage));
+            ui.label(format!("{:.1} GB free of {:.1} GB", available as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+        }
+
+        // Network info
+        for (interface, rx, tx) in self.monitor.get_network_usage() {
+            ui.label(format!("Network {}: ↓{:.1} MB/s ↑{:.1} MB/s", interface, rx as f64 / 1_000_000.0, tx as f64 / 1_000_000.0));
+        }
+    }
 }
 
 impl CyberNinjaApp {
-    fn draw_system_info_section(&self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.heading(RichText::new("System Information").color(self.theme.text_bright));
-            ui.add_space(4.0);
-            
-            let (name, kernel, os_version, hostname) = self.monitor.get_system_info();
-            ui.label(RichText::new(format!("OS: {}", name)).color(self.theme.text_bright));
-            ui.label(RichText::new(format!("Kernel: {}", kernel)).color(self.theme.text_dim));
-            ui.label(RichText::new(format!("Version: {}", os_version)).color(self.theme.text_dim));
-            ui.label(RichText::new(format!("Hostname: {}", hostname)).color(self.theme.text_dim));
-            ui.add_space(8.0);
-        });
+    fn draw_system_info(&mut self, ui: &mut egui::Ui) {
+        // Memory info
+        let (total, used, usage) = self.monitor.get_memory_usage();
+        ui.label(format!("Memory: {:.1}%", usage));
+        ui.label(format!("{:.1} GB / {:.1} GB", used as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+
+        // Disk info
+        for (mount_point, total, available, usage) in self.monitor.get_disk_usage() {
+            ui.label(format!("Disk {}: {:.1}%", mount_point, usage));
+            ui.label(format!("{:.1} GB free of {:.1} GB", available as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+        }
+
+        // Network info
+        for (interface, rx, tx) in self.monitor.get_network_usage() {
+            ui.label(format!("Network {}: ↓{:.1} MB/s ↑{:.1} MB/s", interface, rx as f64 / 1_000_000.0, tx as f64 / 1_000_000.0));
+        }
     }
 
-    fn draw_cpu_section(&self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.heading(RichText::new("CPU Usage").color(self.theme.text_bright));
-            ui.add_space(4.0);
-            
-            for (name, usage) in self.monitor.get_cpu_usage() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&name).color(self.theme.text_dim));
-                    self.draw_value_bar(ui, usage / 100.0, self.theme.neon_secondary);
-                    ui.label(RichText::new(format!("{:.1}%", usage)).color(self.theme.text_bright));
-                });
-            }
-            ui.add_space(8.0);
-        });
-    }
+    fn draw_system_stats(&mut self, ui: &mut egui::Ui) {
+        // Memory info
+        let (total, used, usage) = self.monitor.get_memory_usage();
+        ui.label(format!("Memory: {:.1}%", usage));
+        ui.label(format!("{:.1} GB / {:.1} GB", used as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
 
-    fn draw_memory_section(&self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.heading(RichText::new("Memory Usage").color(self.theme.text_bright));
-            ui.add_space(4.0);
-            
-            let (total, used, usage) = self.monitor.get_memory_info();
-            ui.label(RichText::new(format!("Total: {:.1} GB", total as f64 / 1024.0 / 1024.0 / 1024.0)).color(self.theme.text_bright));
-            ui.label(RichText::new(format!("Used: {:.1} GB", used as f64 / 1024.0 / 1024.0 / 1024.0)).color(self.theme.text_dim));
-            self.draw_value_bar(ui, usage / 100.0, self.theme.neon_primary);
-            ui.label(RichText::new(format!("Usage: {:.1}%", usage)).color(self.theme.text_bright));
-            ui.add_space(8.0);
-        });
-    }
+        // Disk info
+        for (mount_point, total, available, usage) in self.monitor.get_disk_usage() {
+            ui.label(format!("Disk {}: {:.1}%", mount_point, usage));
+            ui.label(format!("{:.1} GB free of {:.1} GB", available as f64 / 1_000_000_000.0, total as f64 / 1_000_000_000.0));
+        }
 
-    fn draw_disk_section(&self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.heading(RichText::new("Disk Usage").color(self.theme.text_bright));
-            ui.add_space(4.0);
-            
-            for (mount_point, total, available) in self.monitor.get_disk_info() {
-                let used = total - available;
-                let usage = (used as f64 / total as f64) * 100.0;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&mount_point).color(self.theme.text_dim));
-                    self.draw_value_bar(ui, usage as f32 / 100.0, self.theme.neon_primary);
-                    ui.label(RichText::new(format!("{:.1}%", usage)).color(self.theme.text_bright));
-                });
-                ui.label(RichText::new(format!("{:.1} GB free of {:.1} GB",
-                    available as f64 / 1024.0 / 1024.0 / 1024.0,
-                    total as f64 / 1024.0 / 1024.0 / 1024.0
-                )).color(self.theme.text_dim));
-            }
-            ui.add_space(8.0);
-        });
-    }
-
-    fn draw_network_section(&self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.heading(RichText::new("Network Usage").color(self.theme.text_bright));
-            ui.add_space(4.0);
-            
-            for (interface, rx, tx) in self.monitor.get_network_info() {
-                ui.label(RichText::new(&interface).color(self.theme.text_bright));
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Download:").color(self.theme.text_dim));
-                    ui.label(RichText::new(format!("{:.2} MB/s", rx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Upload:").color(self.theme.text_dim));
-                    ui.label(RichText::new(format!("{:.2} MB/s", tx as f64 / 1024.0 / 1024.0)).color(self.theme.text_bright));
-                });
-            }
-            ui.add_space(8.0);
-        });
+        // Network info
+        for (interface, rx, tx) in self.monitor.get_network_usage() {
+            ui.label(format!("Network {}: ↓{:.1} MB/s ↑{:.1} MB/s", interface, rx as f64 / 1_000_000.0, tx as f64 / 1_000_000.0));
+        }
     }
 }
 
@@ -1169,6 +1293,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window_tests::{create_test_app, create_mock_frame};
 
     // Test NetworkStats struct
     mod network_stats_tests {
@@ -1198,6 +1323,29 @@ mod tests {
             assert_eq!(stats.bytes_sent, 1000);
         }
     }
+
+    #[test]
+    fn test_system_info() {
+        let mut app = create_test_app();
+        let mut frame = create_mock_frame();
+
+        // Memory info
+        let (total, used, usage) = app.monitor.get_memory_usage();
+        assert!(usage >= 0.0 && usage <= 100.0, "Memory usage percentage must be between 0 and 100");
+        assert!(used <= total, "Used memory cannot exceed total memory");
+
+        // Disk info
+        for (mount_point, total, available, usage) in app.monitor.get_disk_usage() {
+            assert!(available <= total, "Available space cannot exceed total space");
+            assert!(usage >= 0.0 && usage <= 100.0, "Disk usage percentage must be between 0 and 100");
+        }
+
+        // Network info
+        for (interface, rx, tx) in app.monitor.get_network_usage() {
+            assert!(rx >= 0, "Received bytes cannot be negative");
+            assert!(tx >= 0, "Transmitted bytes cannot be negative");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1209,17 +1357,29 @@ mod window_tests {
     pub fn create_test_app() -> CyberNinjaApp {
         let theme = theme::CyberTheme::default();
         CyberNinjaApp {
-            system: System::new_all(),
-            start_time: Instant::now(),
-            neon_pulse: 0.0,
-            tts: None,
-            last_cpu_warning: None,
-            last_memory_warning: None,
-            last_status_update: Instant::now(),
+            system_monitor: SystemMonitor::new(),
+            message_system: MessageSystem::new(),
+            tts_manager: Some(TTSManager::new().expect("Failed to initialize TTS system")),
+            ai_personality: AIPersonality::default(),
+            runtime: Runtime::new().unwrap(),
             show_settings: false,
-            settings_volume: 0.8,
-            settings_cpu_threshold: 80.0,
-            settings_update_interval: 1.0,
+            show_system_info: true,
+            show_message_log: false,
+            show_personality_settings: false,
+            show_audio_settings: false,
+            fps_history: Vec::new(),
+            last_frame_time: Instant::now(),
+            frame_times: Vec::new(),
+            scan_line_offset: 0.0,
+            hologram_flicker: 0.0,
+            message_history: Vec::new(),
+            last_message_time: Instant::now(),
+            system: System::new_all(),
+            last_update: Instant::now(),
+            cpu_history: Vec::new(),
+            memory_history: Vec::new(),
+            disk_history: Vec::new(),
+            network_history: Vec::new(),
             network_stats: NetworkStats::new(),
             cpu_icon: None,
             memory_icon: None,
@@ -1230,11 +1390,16 @@ mod window_tests {
             editing_catchphrase: String::new(),
             theme: theme.clone(),
             shurikens: Vec::new(),
-            last_frame_time: Instant::now(),
             warp_effect_intensity: 0.0,
             particle_system: ParticleSystem::new(theme),
             hologram_phase: 0.0,
-            runtime: Runtime::new().unwrap(),
+            start_time: Instant::now(),
+            last_cpu_warning: None,
+            last_memory_warning: None,
+            last_status_update: Instant::now(),
+            settings_cpu_threshold: 80.0,
+            settings_update_interval: 30,
+            neon_pulse: 0.5,
         }
     }
 

@@ -1,11 +1,45 @@
-use serde::{Serialize, Deserialize};
 use std::fmt;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum MessagePart {
     Static(String),
     Dynamic(String),
     Full(String),
+}
+
+impl MessagePart {
+    pub fn text(&self) -> &str {
+        match self {
+            MessagePart::Static(text) => text,
+            MessagePart::Dynamic(text) => text,
+            MessagePart::Full(text) => text,
+        }
+    }
+
+    pub fn static_text(text: String) -> Self {
+        MessagePart::Static(text)
+    }
+}
+
+pub struct MessageSystem {
+    messages: Vec<MessagePart>,
+}
+
+impl MessageSystem {
+    pub fn new() -> Self {
+        MessageSystem {
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn add_message(&mut self, part: MessagePart) {
+        self.messages.push(part);
+    }
+
+    pub fn get_messages(&self) -> &[MessagePart] {
+        &self.messages
+    }
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -15,33 +49,84 @@ pub enum CacheKey {
     Full(String, String),                // Event type + discretized data
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersonalitySettings {
+    pub voice_type: String,
+    pub volume: f32,
+    pub speech_rate: f32,
     pub drunk_level: i32,
     pub sass_level: i32,
+    pub tech_expertise: i32,
+    pub grand_pappi_refs: i32,
     pub enthusiasm: i32,
     pub anxiety_level: i32,
-    pub grand_pappi_refs: i32,
-    pub voice_type: String,
+    pub catchphrases: Vec<String>,
+    pub audio_enabled: bool,
+    pub is_1337_mode: bool,
 }
 
 impl Default for PersonalitySettings {
     fn default() -> Self {
         PersonalitySettings {
+            voice_type: "default".to_string(),
+            volume: 1.0,
+            speech_rate: 1.0,
             drunk_level: 0,
             sass_level: 0,
+            tech_expertise: 0,
+            grand_pappi_refs: 0,
             enthusiasm: 0,
             anxiety_level: 0,
-            grand_pappi_refs: 0,
-            voice_type: "alloy".to_string(),
+            catchphrases: vec![],
+            audio_enabled: true,
+            is_1337_mode: false,
         }
     }
 }
 
+impl PartialEq for PersonalitySettings {
+    fn eq(&self, other: &Self) -> bool {
+        self.voice_type == other.voice_type &&
+        (self.volume - other.volume).abs() < f32::EPSILON &&
+        (self.speech_rate - other.speech_rate).abs() < f32::EPSILON &&
+        self.drunk_level == other.drunk_level &&
+        self.sass_level == other.sass_level &&
+        self.tech_expertise == other.tech_expertise &&
+        self.grand_pappi_refs == other.grand_pappi_refs &&
+        self.enthusiasm == other.enthusiasm &&
+        self.anxiety_level == other.anxiety_level &&
+        self.catchphrases == other.catchphrases &&
+        self.audio_enabled == other.audio_enabled &&
+        self.is_1337_mode == other.is_1337_mode
+    }
+}
+
+impl Eq for PersonalitySettings {}
+
+impl std::hash::Hash for PersonalitySettings {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.voice_type.hash(state);
+        (self.volume.to_bits()).hash(state);
+        (self.speech_rate.to_bits()).hash(state);
+        self.drunk_level.hash(state);
+        self.sass_level.hash(state);
+        self.tech_expertise.hash(state);
+        self.grand_pappi_refs.hash(state);
+        self.enthusiasm.hash(state);
+        self.anxiety_level.hash(state);
+        self.catchphrases.hash(state);
+        self.audio_enabled.hash(state);
+        self.is_1337_mode.hash(state);
+    }
+}
+
 pub struct SystemData {
-    pub cpu_usage: f32,
-    pub memory_used: u64,
+    pub cpu_usage: Vec<(String, f32)>,
     pub memory_total: u64,
+    pub memory_used: u64,
+    pub memory_usage: f32,
+    pub disk_total: u64,
+    pub disk_available: u64,
     pub disk_usage: f32,
     pub network_rx: u64,
     pub network_tx: u64,
@@ -78,37 +163,53 @@ pub fn discretize(value: f32) -> String {
 
 pub fn generate_message(data: &SystemData) -> Vec<MessagePart> {
     let mut parts = Vec::new();
-    
-    // Add CPU usage message
-    let cpu_msg = format!("CPU usage is at {:.1}%", data.cpu_usage);
-    parts.push(MessagePart::Static(cpu_msg));
-    
-    // Add memory usage message
-    let memory_used_gb = data.memory_used as f64 / 1_073_741_824.0;
-    let memory_total_gb = data.memory_total as f64 / 1_073_741_824.0;
-    let memory_msg = format!("Memory usage: {:.1}GB / {:.1}GB", memory_used_gb, memory_total_gb);
-    parts.push(MessagePart::Static(memory_msg));
-    
-    // Add disk usage message
-    let disk_msg = format!("Disk usage is at {:.1}%", data.disk_usage);
-    parts.push(MessagePart::Static(disk_msg));
-    
-    // Add network usage message
-    let network_msg = format!("Network: ↓{:.1}MB/s ↑{:.1}MB/s", 
+
+    // CPU Usage
+    for (_name, usage) in &data.cpu_usage {
+        parts.push(MessagePart::Static(format!("CPU Usage: {:.1}%", usage)));
+    }
+
+    // Memory Usage
+    let memory_text = format!(
+        "Memory: {:.1}GB/{:.1}GB ({:.1}%)",
+        data.memory_used as f64 / 1_073_741_824.0,
+        data.memory_total as f64 / 1_073_741_824.0,
+        data.memory_usage,
+    );
+    parts.push(MessagePart::Static(memory_text));
+
+    // Disk Usage
+    let disk_text = format!(
+        "Disk: {:.1}GB/{:.1}GB ({:.1}%)",
+        data.disk_available as f64 / 1_073_741_824.0,
+        data.disk_total as f64 / 1_073_741_824.0,
+        data.disk_usage,
+    );
+    parts.push(MessagePart::Static(disk_text));
+
+    // Network Usage
+    let network_text = format!(
+        "Network: {:.1}MB/s Up, {:.1}MB/s Down",
+        data.network_tx as f64 / 1_048_576.0,
         data.network_rx as f64 / 1_048_576.0,
-        data.network_tx as f64 / 1_048_576.0);
-    parts.push(MessagePart::Static(network_msg));
-    
+    );
+    parts.push(MessagePart::Static(network_text));
+
     parts
+}
+
+pub fn generate_status_message(cpu: f32, memory: f32, disk: f32, network: f32) -> Vec<MessagePart> {
+    vec![
+        MessagePart::Static(format!("CPU Usage: {:.1}%", cpu)),
+        MessagePart::Static(format!("Memory Usage: {:.1}%", memory)),
+        MessagePart::Static(format!("Disk Usage: {:.1}%", disk)),
+        MessagePart::Static(format!("Network Usage: {:.1}%", network)),
+    ]
 }
 
 impl fmt::Display for MessagePart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MessagePart::Static(text) => write!(f, "{}", text),
-            MessagePart::Dynamic(text) => write!(f, "{}", text),
-            MessagePart::Full(text) => write!(f, "{}", text),
-        }
+        write!(f, "{}", self.text())
     }
 }
 
@@ -134,39 +235,88 @@ mod tests {
     #[test]
     fn test_message_generation() {
         let data = SystemData {
-            cpu_usage: 45.0,
-            memory_used: 6_000_000_000,
+            cpu_usage: vec![("CPU0".to_string(), 45.0)],
             memory_total: 16_000_000_000,
-            disk_usage: 70.0,
-            network_rx: 1_048_576_000,
-            network_tx: 524_288_000,
+            memory_used: 8_000_000_000,
+            memory_usage: 50.0,
+            disk_total: 500_000_000_000,
+            disk_available: 250_000_000_000,
+            disk_usage: 50.0,
+            network_rx: 1_000_000,
+            network_tx: 500_000,
         };
 
         let status_parts = generate_message(&data);
         assert_eq!(status_parts.len(), 4);
         
         if let MessagePart::Static(text) = &status_parts[0] {
-            assert_eq!(text, "CPU usage is at 45.0%");
+            assert_eq!(text, "CPU Usage: 45.0%");
         } else {
             panic!("Expected CPU usage message");
         }
 
         if let MessagePart::Static(text) = &status_parts[1] {
-            assert_eq!(text, "Memory usage: 5.6GB / 14.9GB");
+            assert_eq!(text, "Memory: 50.0%");
+            assert_eq!(text, "8.0 GB / 16.0 GB");
         } else {
             panic!("Expected memory usage message");
         }
 
         if let MessagePart::Static(text) = &status_parts[2] {
-            assert_eq!(text, "Disk usage is at 70.0%");
+            assert_eq!(text, "Disk: 50.0%");
+            assert_eq!(text, "250.0 GB free of 500.0 GB");
         } else {
             panic!("Expected disk usage message");
         }
 
         if let MessagePart::Static(text) = &status_parts[3] {
-            assert_eq!(text, "Network: ↓1000.0MB/s ↑500.0MB/s");
+            assert_eq!(text, "Network: ↓1.0 MB/s ↑0.5 MB/s");
         } else {
             panic!("Expected network usage message");
+        }
+    }
+
+    #[test]
+    fn test_status_message_generation() {
+        let data = SystemData {
+            cpu_usage: vec![("CPU0".to_string(), 45.0)],
+            memory_total: 16_000_000_000,
+            memory_used: 8_000_000_000,
+            memory_usage: 50.0,
+            disk_total: 500_000_000_000,
+            disk_available: 250_000_000_000,
+            disk_usage: 50.0,
+            network_rx: 1_000_000,
+            network_tx: 500_000,
+        };
+
+        let status_parts = generate_message(&data);
+        assert_eq!(status_parts.len(), 4);
+
+        if let MessagePart::Static(text) = &status_parts[0] {
+            assert!(text.contains("CPU Usage: 45.0%"));
+        } else {
+            panic!("Expected Static message part");
+        }
+
+        if let MessagePart::Static(text) = &status_parts[1] {
+            assert!(text.contains("Memory: 50.0%"));
+            assert!(text.contains("8.0 GB / 16.0 GB"));
+        } else {
+            panic!("Expected Static message part");
+        }
+
+        if let MessagePart::Static(text) = &status_parts[2] {
+            assert!(text.contains("Disk: 50.0%"));
+            assert!(text.contains("250.0 GB free of 500.0 GB"));
+        } else {
+            panic!("Expected Static message part");
+        }
+
+        if let MessagePart::Static(text) = &status_parts[3] {
+            assert!(text.contains("Network: ↓1.0 MB/s ↑0.5 MB/s"));
+        } else {
+            panic!("Expected Static message part");
         }
     }
 } 

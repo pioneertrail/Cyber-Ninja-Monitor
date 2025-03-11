@@ -114,7 +114,7 @@ impl PersonalityModal {
             let mut to_remove = None;
             for (idx, catchphrase) in self.personality.catchphrases.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(catchphrase).color(self.theme.foreground_dim));
+                    ui.label(RichText::new(catchphrase).color(self.theme.foreground));
                     if ui.small_button("❌").clicked() {
                         to_remove = Some(idx);
                     }

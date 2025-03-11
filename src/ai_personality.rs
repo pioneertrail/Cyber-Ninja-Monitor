@@ -88,7 +88,18 @@ impl AIPersonality {
 
     /// Gets a random exit message influenced by personality traits
     pub fn get_exit_message(&self) -> String {
-        "Shutting down systems. Grand Pappi always said to leave things better than we found them. Stay awesome, Captain!".to_string()
+        let base_message = "Shutting down CyberNinja Monitor...";
+        if self.drunk_level > 0.7 {
+            "Zzz... *hiccup* Shutting down... nighty night...".to_string()
+        } else if self.sass_level > 0.7 {
+            "Finally, some peace and quiet. Bye!".to_string()
+        } else if self.anxiety_level > 0.7 {
+            "Oh no, shutting down! I hope everything will be okay...".to_string()
+        } else if self.enthusiasm > 0.7 {
+            "Awesome session! Can't wait to see you again! Powering down!".to_string()
+        } else {
+            base_message.to_string()
+        }
     }
 
     /// Generates a message with personality-driven effects
@@ -141,12 +152,18 @@ impl AIPersonality {
 
     pub fn to_settings(&self) -> PersonalitySettings {
         PersonalitySettings {
-            drunk_level: (self.drunk_level * 100.0) as i32,
-            sass_level: (self.sass_level * 100.0) as i32,
-            enthusiasm: (self.enthusiasm * 100.0) as i32,
-            anxiety_level: (self.anxiety_level * 100.0) as i32,
-            grand_pappi_refs: (self.grand_pappi_references * 100.0) as i32,
             voice_type: self.voice_type.clone(),
+            volume: self.volume,
+            speech_rate: self.speech_rate,
+            drunk_level: self.drunk_level as i32,
+            sass_level: self.sass_level as i32,
+            tech_expertise: self.tech_expertise as i32,
+            grand_pappi_refs: self.grand_pappi_references as i32,
+            enthusiasm: self.enthusiasm as i32,
+            anxiety_level: self.anxiety_level as i32,
+            catchphrases: self.catchphrases.clone(),
+            audio_enabled: self.audio_enabled,
+            is_1337_mode: self.is_1337_mode,
         }
     }
 
@@ -154,13 +171,21 @@ impl AIPersonality {
         match message {
             MessagePart::Static(text) => {
                 let mut modified = text.clone();
-                if self.drunk_level > 0.0 {
+                if self.drunk_level > 0.5 {
                     modified = self.apply_drunk_effect(&modified);
                 }
-                modified = self.apply_enthusiasm(&modified);
-                modified = self.apply_anxiety(&modified);
-                modified = self.apply_sass(&modified);
-                modified = self.apply_grand_pappi(&modified);
+                if self.enthusiasm > 0.5 {
+                    modified = self.apply_enthusiasm(&modified);
+                }
+                if self.anxiety_level > 0.5 {
+                    modified = self.apply_anxiety(&modified);
+                }
+                if self.sass_level > 0.5 {
+                    modified = self.apply_sass(&modified);
+                }
+                if self.grand_pappi_references > 0.5 {
+                    modified = self.apply_grand_pappi(&modified);
+                }
                 MessagePart::Static(modified)
             }
             MessagePart::Dynamic(text) => MessagePart::Dynamic(text.clone()),
